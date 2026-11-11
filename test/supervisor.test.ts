@@ -111,6 +111,9 @@ function fakeAgent(id = 'dsh-session-1', cwd = '/workspace', onAppend?: (type: s
           registeredTools.push(definition.name)
           return () => undefined
         },
+        // The in-process DSH tool bridge reads the registry's schemas per turn.
+        schemas: () => [],
+        execute: async () => ({ content: [], isError: false }),
       },
     },
     failAppend: (error: unknown) => { appendError = error },

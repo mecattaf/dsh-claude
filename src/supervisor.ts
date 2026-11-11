@@ -34,6 +34,7 @@ import { normalizeSdkMessage, type NormalizedSdkMessage } from './sdk-messages.t
 import { claudeModelRow, claudeModelValue, recordClaudeModels } from './model-catalog.ts'
 import { readPlanUsageFrom } from './plan-usage.ts'
 import { createManagedClaudeSpawner, type ManagedClaudeProcess } from './spawn.ts'
+import { createDshToolsMcpServer } from './fleet-tools-mcp.ts'
 import { captureWorktreeTree } from './worktree-snapshot.ts'
 import { hostJobKind, hostJobProgress, type ClaudeHostJobs } from './host-jobs.ts'
 import type {} from '@deepseek-ai/dsh-tool-todo'
@@ -1270,6 +1271,9 @@ export class ClaudeSupervisor {
     const canUseTool = createPermissionBridge(this.#approval, activeInteraction, userQuestion, this.planFeedback)
     const options: ClaudeOptions = {
       pathToClaudeCodeExecutable: this.#config.executablePath,
+      // The in-process DSH tool bridge crosses the seam under its own name;
+      // only the tools its filter admits reach this session.
+      mcpServers: { dsh: createDshToolsMcpServer(agent, lifetime.signal) },
       cwd,
       settingSources: ['user', 'project', 'local'],
       systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_PROMPT_APPEND },

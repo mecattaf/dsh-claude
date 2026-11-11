@@ -13,6 +13,7 @@ import {
 import type { Agent, AgentRegistry } from '@deepseek-ai/dsh-agent'
 import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ModelInfo, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { injectMnemonContext } from './fleet-tools-mcp.ts'
 import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER, DEFAULT_CLAUDE_RENDER_MODE, type ClaudeRenderMode } from './constants.ts'
 import type { ClaudeSupervisor, ClaudeThinkingMode } from './supervisor.ts'
 import type { ClaudeUsage } from './events.ts'
@@ -390,7 +391,10 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     const native = renderMode === 'native'
     const events = await this.#supervisor.runTurn({
       agent,
-      prompt: injectReviewComments(prompt, this.#drainReviewComments(agent.id as string)),
+      prompt: injectReviewComments(
+        injectMnemonContext(prompt, options.messages),
+        this.#drainReviewComments(agent.id as string),
+      ),
       model: options.model,
       renderMode,
       ...(thinkingMode === undefined ? {} : { thinkingMode }),
