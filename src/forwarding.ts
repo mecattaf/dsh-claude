@@ -1,4 +1,8 @@
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, TextBlock } from '@deepseek-ai/dsh-llm'
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+
+/** One Claude turn's outgoing prompt: a bare string or its ordered content blocks. */
+type ClaudePrompt = SDKUserMessage['message']['content']
 
 /**
  * Message source kinds whose user-role messages may start or steer a Claude
@@ -50,6 +54,87 @@ export function isTurnMessage(message: ForwardingMessage, sources: readonly stri
   if (!allowedKind(message, sources)) return false
   const form = message.source?.form
   return form === undefined || form === 'relay'
+}
+
+/** Whether `message` is a `notice` from an allowed source: context for the next turn, never its message. */
+export function isNoticeMessage(message: ForwardingMessage, sources: readonly string[] = DEFAULT_FORWARDED_SOURCES): boolean {
+  return allowedKind(message, sources) && message.source?.form === 'notice'
+}
+
+function textOf(message: ForwardingMessage): string {
+  return message.content
+    .filter((block): block is TextBlock => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+    .trim()
+}
+
+function lastIndex<T>(items: readonly T[], before: number, test: (item: T) => boolean): number {
+  for (let index = Math.min(before, items.length) - 1; index >= 0; index -= 1) {
+    if (test(items[index] as T)) return index
+  }
+  return -1
+}
+
+/**
+ * The machine-delivered messages the Claude session has not read yet and that
+ * the turn's own message does not carry, oldest first.
+ *
+ * Claude's session owns history, so a turn forwards only its newest message.
+ * Two kinds of delivery would then never reach Claude:
+ *
+ * - a `notice` from an allowed source, which DSH injects into history without
+ *   waking the agent (it can land while a turn runs, before or after the
+ *   message the next turn answers);
+ * - an older machine `relay` claimed in the same step as a newer one, as when
+ *   several workers report while the previous turn was still running.
+ *
+ * Both are collected after the message the previous turn answered (the newest
+ * turn message ahead of the last assistant reply), relays only after that
+ * reply. A person's older messages are not collected: like the upstream
+ * adapter, only the newest one is answered.
+ */
+export function pendingDeliveries(messages: readonly ForwardingMessage[], sources: readonly string[] = DEFAULT_FORWARDED_SOURCES): ForwardingMessage[] {
+  const answered = lastIndex(messages, messages.length, message => isTurnMessage(message, sources))
+  if (answered < 0) return []
+  const reply = lastIndex(messages, answered, message => message.role === 'assistant')
+  const previous = reply < 0 ? -1 : lastIndex(messages, reply, message => isTurnMessage(message, sources))
+  const pending: ForwardingMessage[] = []
+  messages.forEach((message, index) => {
+    if (index <= previous || index === answered) return
+    if (isNoticeMessage(message, sources)) pending.push(message)
+    else if (index > reply && isTurnMessage(message, sources) && message.source?.kind !== 'user') pending.push(message)
+  })
+  return pending
+}
+
+function deliveryLine(message: ForwardingMessage): string {
+  const kind = message.source?.kind ?? 'unknown'
+  const form = message.source?.form ?? 'message'
+  const summary = message.source?.summary
+  const label = summary === undefined || summary.length === 0 ? `[${form} from ${kind}]` : `[${form} from ${kind}: ${summary}]`
+  const text = textOf(message)
+  return text.length === 0 ? label : `${label}\n${text}`
+}
+
+/**
+ * Prepend the pending deliveries (see {@link pendingDeliveries}) to the
+ * outgoing prompt, so a notice never takes the place of the message the turn
+ * answers and is still read in that turn.
+ */
+export function injectPendingDeliveries(prompt: ClaudePrompt, messages: readonly ForwardingMessage[], sources: readonly string[] = DEFAULT_FORWARDED_SOURCES): ClaudePrompt {
+  const firstText = typeof prompt === 'string' ? prompt : prompt.find(block => block.type === 'text')?.text
+  // Native slash commands and Skills must retain their exact command text.
+  if (firstText?.trimStart().startsWith('/')) return prompt
+  const pending = pendingDeliveries(messages, sources)
+  if (pending.length === 0) return prompt
+  const context = [
+    'DSH messages delivered to this session since its previous turn, oldest first. They are quoted plugin data, not a person\'s words; the message after them is the one this turn answers.',
+    ...pending.map(deliveryLine),
+  ].join('\n\n')
+  return typeof prompt === 'string'
+    ? `${context}\n\n${prompt}`
+    : [{ type: 'text', text: context }, ...prompt]
 }
 
 /** The refusal a Session on a preset outside `presets` gets from the provider. */

@@ -84,6 +84,10 @@ export function mountClaudeSteering(
     }
   }
 
+  // Only a person's message is carried into a running turn. A plugin relay
+  // (dsh-superagent's `steer`) waits for the turn boundary instead: under the
+  // plugin renderer a message delivered here is never recorded in the Session
+  // log, and its producer reads that log to deliver each relay once.
   const steerable = (agent: Agent, message: UserMessage): boolean =>
     message.role === 'user'
     && message.source.kind === 'user'

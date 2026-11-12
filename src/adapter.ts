@@ -15,7 +15,7 @@ import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deeps
 import type { ModelInfo, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { injectMnemonContext } from './fleet-tools-mcp.ts'
 import { CLAUDE_CODE_PROVIDER, DEFAULT_CLAUDE_RENDER_MODE, type ClaudeRenderMode } from './constants.ts'
-import { DEFAULT_CLAUDE_PRESETS, DEFAULT_FORWARDED_SOURCES, isTurnMessage, presetRefusal } from './forwarding.ts'
+import { DEFAULT_CLAUDE_PRESETS, DEFAULT_FORWARDED_SOURCES, injectPendingDeliveries, isTurnMessage, presetRefusal } from './forwarding.ts'
 import type { ClaudeSupervisor, ClaudeThinkingMode } from './supervisor.ts'
 import type { ClaudeUsage } from './events.ts'
 import { claudeModelRow, ensureClaudeModels } from './model-catalog.ts'
@@ -406,7 +406,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     const events = await this.#supervisor.runTurn({
       agent,
       prompt: injectReviewComments(
-        injectMnemonContext(prompt, options.messages),
+        injectMnemonContext(injectPendingDeliveries(prompt, options.messages, this.#sources), options.messages),
         this.#drainReviewComments(agent.id as string),
       ),
       model: options.model,
