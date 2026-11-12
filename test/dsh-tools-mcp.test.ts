@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createDshToolsMcpServer, dshToolDefinitions, injectMnemonContext } from '../src/fleet-tools-mcp.ts'
+import { createDshToolsMcpServer, dshToolDefinitions, injectMnemonContext } from '../src/dsh-tools-mcp.ts'
 
 const tool = (name: string, description = `DSH utility ${name}`, parameters: Record<string, unknown> = { type: 'object', properties: {} }) => ({
   name,
