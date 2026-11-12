@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readDefaultPermissionMode, readGlobalSettings, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, resolvePermissionSelector, updateGlobalSettings } from '../src/global-settings.ts'
+import { readDefaultPermissionMode, readGlobalSettings, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, resolvePermissionSelector, resolveSupervisorLimits, updateGlobalSettings } from '../src/global-settings.ts'
 import { isGlobalSettingsView } from '../src/client/ClaudeCodeSettings.tsx'
 
 const roots: string[] = []
@@ -194,6 +194,28 @@ describe('Claude Code global settings registry', () => {
     await expect(updateGlobalSettings({ maxProcesses: '17' }, deps)).rejects.toThrow('Invalid value')
     await expect(updateGlobalSettings({ idleTimeoutMinutes: '2.5' }, deps)).rejects.toThrow('Invalid value')
     await expect(updateGlobalSettings({ idleTimeoutMinutes: '' }, deps)).rejects.toThrow('Invalid value')
+  })
+
+  it('a profile\'s supervisor limits override the global setting, and unset ones keep it', async () => {
+    const paths = await fixture()
+    const builtIn = { maxProcesses: 4, idleTimeoutMs: 30 * 60_000 }
+    // No file: an unset limit is the built-in one, a set one is the profile's.
+    await expect(resolveSupervisorLimits({}, { paths })).resolves.toEqual(builtIn)
+    await expect(resolveSupervisorLimits({ maxProcesses: 2, idleTimeoutMs: 5 * 60_000 }, { paths }))
+      .resolves.toEqual({ maxProcesses: 2, idleTimeoutMs: 5 * 60_000 })
+    // Another profile of the same home saves the shared Settings dialog.
+    await updateGlobalSettings({ maxProcesses: '8', idleTimeoutMinutes: '10' }, { paths })
+    await expect(resolveSupervisorLimits({}, { paths })).resolves.toEqual({ maxProcesses: 8, idleTimeoutMs: 600_000 })
+    await expect(resolveSupervisorLimits({ maxProcesses: 2, idleTimeoutMs: 5 * 60_000 }, { paths }))
+      .resolves.toEqual({ maxProcesses: 2, idleTimeoutMs: 5 * 60_000 })
+    // Each limit is decided on its own.
+    await expect(resolveSupervisorLimits({ maxProcesses: 2 }, { paths })).resolves.toEqual({ maxProcesses: 2, idleTimeoutMs: 600_000 })
+    await expect(resolveSupervisorLimits({ idleTimeoutMs: 90_000 }, { paths })).resolves.toEqual({ maxProcesses: 8, idleTimeoutMs: 90_000 })
+    // The profile's limits never write the shared file other profiles read.
+    expect(JSON.parse(await readFile(paths.pluginSettingsFile, 'utf8'))).toEqual({ maxProcesses: 8, idleTimeoutMinutes: 10 })
+    await writeFile(paths.pluginSettingsFile, 'not json')
+    await expect(resolveSupervisorLimits({}, { paths })).resolves.toEqual(builtIn)
+    await expect(resolveSupervisorLimits({ maxProcesses: 2 }, { paths })).resolves.toEqual({ ...builtIn, maxProcesses: 2 })
   })
 
   it('updates only outputStyle, preserves unknown settings, and writes user-only permissions', async () => {
