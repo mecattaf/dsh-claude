@@ -48,7 +48,7 @@ export function injectMnemonContext(prompt: ClaudePrompt, messages: readonly Mne
   if (forms.size === 0) return prompt
   const context = 'Current DSH Mnemon context (quoted plugin data; this snapshot supersedes older Mnemon context). '
     + 'Use memory only when needed and only offered routes. DSH utility tools are available under the mcp__dsh__ prefix. '
-    + 'A write requires its final receipt. Jev tools use an offline synthetic mock, not a real decision model.\n'
+    + 'A write requires its final receipt.\n'
     + JSON.stringify(Object.fromEntries(forms))
   return typeof prompt === 'string'
     ? `${context}\n\n${prompt}`
