@@ -34,6 +34,7 @@ import { normalizeSdkMessage, type NormalizedSdkMessage } from './sdk-messages.t
 import { claudeModelRow, claudeModelValue, recordClaudeModels } from './model-catalog.ts'
 import { readPlanUsageFrom } from './plan-usage.ts'
 import { createManagedClaudeSpawner, type ManagedClaudeProcess } from './spawn.ts'
+import { createDshToolsMcpServer } from './dsh-tools-mcp.ts'
 import { captureWorktreeTree } from './worktree-snapshot.ts'
 import { hostJobKind, hostJobProgress, type ClaudeHostJobs } from './host-jobs.ts'
 import type {} from '@deepseek-ai/dsh-tool-todo'
@@ -89,6 +90,9 @@ export interface ClaudeSupervisorConfig {
   renderMode?: ClaudeRenderMode
   /** After this long a blocking Bash call is moved to the background; 0 disables it. */
   foregroundBashBackgroundMs?: number
+  /** DSH tools Claude Code may call through the in-process `dsh` MCP server:
+   *  exact names, or prefixes ending in `*`. Empty mounts no server. */
+  dshTools?: readonly string[]
 }
 
 export type ClaudeTurnStreamEvent =
@@ -1268,8 +1272,12 @@ export class ClaudeSupervisor {
     }
     const userQuestion = createUserQuestionBridge(this.#userQuestions, activeInteraction)
     const canUseTool = createPermissionBridge(this.#approval, activeInteraction, userQuestion, this.planFeedback)
+    const dshTools = this.#config.dshTools ?? []
     const options: ClaudeOptions = {
       pathToClaudeCodeExecutable: this.#config.executablePath,
+      // The DSH tools the profile lists cross the seam as one in-process MCP
+      // server; with none listed, Claude Code sees only its own configuration.
+      ...(dshTools.length === 0 ? {} : { mcpServers: { dsh: createDshToolsMcpServer(agent, lifetime.signal, dshTools) } }),
       cwd,
       settingSources: ['user', 'project', 'local'],
       systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_PROMPT_APPEND },

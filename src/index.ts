@@ -70,6 +70,8 @@ export interface Config {
   model?: string
   idleTimeoutMs?: number
   maxProcesses?: number
+  /** DSH tools Claude Code may call, as `mcp__dsh__<name>`: exact names, or prefixes ending in `*`. */
+  dshTools?: string[]
 }
 
 export const Config: z<Config> = z.object({
@@ -77,6 +79,7 @@ export const Config: z<Config> = z.object({
   model: z.string().default('default'),
   idleTimeoutMs: z.number().min(1_000).max(2_147_483_647).default(30 * 60 * 1_000),
   maxProcesses: z.number().step(1).min(1).default(4),
+  dshTools: z.array(z.string()).default([]),
 })
 
 const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (preset route not mounted?)'
@@ -245,6 +248,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const supervisorConfig = {
     executablePath: '',
     defaultModel: config.model ?? 'default',
+    dshTools: config.dshTools ?? [],
     ...defaultLimits,
   }
   // Settings overrides win over the plugin config; the supervisor reads the
