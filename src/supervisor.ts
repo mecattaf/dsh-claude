@@ -34,7 +34,7 @@ import { normalizeSdkMessage, type NormalizedSdkMessage } from './sdk-messages.t
 import { claudeModelRow, claudeModelValue, recordClaudeModels } from './model-catalog.ts'
 import { readPlanUsageFrom } from './plan-usage.ts'
 import { createManagedClaudeSpawner, type ManagedClaudeProcess } from './spawn.ts'
-import { createDshToolsMcpServer } from './dsh-tools-mcp.ts'
+import { createDshToolsMcpServer, dshToolSetKey } from './dsh-tools-mcp.ts'
 import { captureWorktreeTree } from './worktree-snapshot.ts'
 import { hostJobKind, hostJobProgress, type ClaudeHostJobs } from './host-jobs.ts'
 import type {} from '@deepseek-ai/dsh-tool-todo'
@@ -287,6 +287,8 @@ interface SupervisorEntry {
   thinkingMode: ClaudeThinkingMode | undefined
   /** The DSH system prompt this process was started with; see ClaudeTurnRequest. */
   systemAppend: string | undefined
+  /** The bridged DSH tool names this process's MCP server lists; see dshToolSetKey. */
+  toolSet: string
   permissionMode: PermissionMode
   state: ClaudeSupervisorState
   lastUsedAt: number
@@ -838,16 +840,22 @@ export class ClaudeSupervisor {
     // answers as the old model. Those rebuild the query; the persisted Claude
     // session binding keeps the context.
     // The appended system prompt is one of those start-time shapes: the CLI
-    // takes it only at initialization. A changed model or appended prompt
-    // rebuilds the process regardless, so the control request would be spent
-    // on a process that is about to be torn down.
-    const rebuilds = model !== entry.model || request.systemAppend !== entry.systemAppend
+    // takes it only at initialization. So is the bridged DSH tool set: the
+    // in-process MCP server lists the Agent's tools when the query is built,
+    // and a tool a plugin registers later would stay invisible to Claude. A
+    // changed model, appended prompt or tool set rebuilds the process
+    // regardless, so the control request would be spent on a process that is
+    // about to be torn down.
+    const toolSet = dshToolSetKey(request.agent, this.#config.bridgedTools)
+    const rebuilds = model !== entry.model || request.systemAppend !== entry.systemAppend || toolSet !== entry.toolSet
     const switchedLive = mode !== entry.thinkingMode && mode !== undefined && effort !== undefined && !rebuilds
       ? await this.#switchEffort(entry, mode, effort)
       : false
     if (rebuilds || (mode !== entry.thinkingMode && !switchedLive)) {
       this.#entries.delete(sessionId)
-      await this.#disposeEntry(entry, request.systemAppend === entry.systemAppend ? 'model or effort switch' : 'system prompt switch')
+      await this.#disposeEntry(entry, request.systemAppend !== entry.systemAppend
+        ? 'system prompt switch'
+        : toolSet !== entry.toolSet ? 'tool set switch' : 'model or effort switch')
       if (createdForRequest === entry) createdForRequest = undefined
       await throwIfUnavailable()
       try {
@@ -1255,6 +1263,9 @@ export class ClaudeSupervisor {
       model,
       thinkingMode,
       systemAppend,
+      // Read in the same tick as the MCP server below, so the key names
+      // exactly the tools that server lists.
+      toolSet: dshToolSetKey(agent, this.#config.bridgedTools),
       permissionMode,
       state: 'starting' as ClaudeSupervisorState,
       lastUsedAt: Date.now(),
