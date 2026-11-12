@@ -152,6 +152,34 @@ export function dshToolDefinitions(
   return bridgedTools(agent, lifetime, warn, bridged).map(({ definition }) => definition)
 }
 
+/**
+ * The Agent's DSH tools that cross the seam, as its registry lists them now.
+ * When the registry cannot project its list, none cross, with a warning.
+ */
+function bridgedSchemas(agent: Agent, bridged: readonly string[], warn: (message: string) => void): ToolSchema[] {
+  let schemas: readonly ToolSchema[]
+  try {
+    schemas = agent.ctx.tools.schemas(agent)
+  } catch (error) {
+    warn(`dsh-claude: the DSH tools could not be listed, so this Claude query gets none of them: ${errorText(error)}`)
+    return []
+  }
+  return schemas.filter(({ name }) => bridged.some(prefix => name.startsWith(prefix)))
+}
+
+/**
+ * The names of the DSH tools the bridge would list for this Agent now, as one
+ * order-free key. The in-process MCP server lists its tools once, when the
+ * query is built, so a tool a plugin registers or removes later reaches the
+ * Claude session only through a rebuilt query; the supervisor compares this
+ * key at each turn to know when. It takes the same configured prefixes as the
+ * server, and a list the registry cannot project keys as empty, quietly: the
+ * server that lists none has already warned.
+ */
+export function dshToolSetKey(agent: Agent, bridged: readonly string[] = DEFAULT_BRIDGED_TOOLS): string {
+  return bridgedSchemas(agent, bridged, () => {}).map(({ name }) => name).sort().join('\n')
+}
+
 function bridgedTools(
   agent: Agent,
   lifetime: AbortSignal,
@@ -159,16 +187,8 @@ function bridgedTools(
   bridged: readonly string[],
 ): BridgedTool[] {
   const tools: ToolRuntime = agent.ctx.tools
-  let schemas: readonly ToolSchema[]
-  try {
-    schemas = tools.schemas(agent)
-  } catch (error) {
-    warn(`dsh-claude: the DSH tools could not be listed, so this Claude query gets none of them: ${errorText(error)}`)
-    return []
-  }
   const out: BridgedTool[] = []
-  for (const { name, description, parameters } of schemas) {
-    if (!bridged.some(prefix => name.startsWith(prefix))) continue
+  for (const { name, description, parameters } of bridgedSchemas(agent, bridged, warn)) {
     // One tool the bridge cannot represent is left out of this Session,
     // with a warning, rather than failing every turn of it.
     try {
