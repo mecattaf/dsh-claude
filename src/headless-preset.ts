@@ -10,10 +10,10 @@ import { CLAUDE_CODE_PRESET_ID } from './constants.ts'
  * Only the web and API session controllers mount a preset when they create an
  * Agent. The `dsh headless` one-shot runner composes none, so under it the
  * `claude` provider refuses every turn ("available only to the claude
- * preset"). This plugin selects the configured preset on `agent/created`,
- * through the same `agentPresets.select` the session controller's preset
- * picker uses; the selection is logged as `agent-preset/selected` before the
- * first turn. It is opt-in: a profile inserts the row, together with an
+ * preset"). This plugin selects the configured preset on `agent/created`
+ * through `agentPresets.select`, the registry method the Client's preset
+ * picker calls; the selection is logged as `agent-preset/selected` before
+ * the first turn. It is opt-in: a profile inserts the row, together with an
  * `agent-preset-registry` row, which the headless bundle does not load.
  *
  * Insert it only in a profile whose default model is served by the bound
