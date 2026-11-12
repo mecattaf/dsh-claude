@@ -63,7 +63,8 @@ interface GlobalSettingsPaths {
   pluginSettingsFile: string
 }
 
-/** Effective supervisor limits: the plugin config values unless overridden in Settings. */
+/** Effective supervisor limits: a profile's own config values, else the Settings
+ *  overrides, else the built-in limits (`resolveSupervisorLimits`). */
 export interface SupervisorLimits {
   maxProcesses: number
   idleTimeoutMs: number
@@ -71,7 +72,7 @@ export interface SupervisorLimits {
 
 export interface GlobalSettingsDependencies {
   paths?: Partial<GlobalSettingsPaths>
-  /** Limits from the plugin config, shown when Settings holds no override. */
+  /** Limits this profile runs under when Settings holds no override, shown then. */
   defaultLimits?: SupervisorLimits
   /** Invoked after a successful update so live runtime state can follow. */
   onUpdated?: () => void | Promise<void>
@@ -407,7 +408,8 @@ export async function readGlobalSettings(deps: GlobalSettingsDependencies = {}):
   return views(await readDocuments(paths), paths, deps.defaultLimits ?? DEFAULT_LIMITS)
 }
 
-/** Supervisor limits the user overrode in Settings; absent keys fall back to the plugin config. */
+/** Supervisor limits the user overrode in Settings; absent keys fall back to
+ *  the built-in limits (see `resolveSupervisorLimits` for a profile's own). */
 export async function readSupervisorLimitOverrides(deps: GlobalSettingsDependencies = {}): Promise<Partial<SupervisorLimits>> {
   let document: JsonObject
   try {
@@ -420,6 +422,23 @@ export async function readSupervisorLimitOverrides(deps: GlobalSettingsDependenc
   return {
     ...(isBoundedInteger(maxProcesses, 1, MAX_PROCESSES_LIMIT) ? { maxProcesses } : {}),
     ...(isBoundedInteger(idleTimeoutMinutes, 1, MAX_IDLE_TIMEOUT_MINUTES) ? { idleTimeoutMs: idleTimeoutMinutes * 60_000 } : {}),
+  }
+}
+
+/** The supervisor limits this profile's Claude processes run under. The
+ *  settings file is shared by every profile under one DSH home, so a limit a
+ *  profile names in its `llm-claude` config wins whatever that file says, as
+ *  its permission selector does; a limit it leaves unset reads the file, then
+ *  the built-in default. Each limit is decided on its own. The Settings dialog
+ *  still edits the shared file, which such a profile then ignores. */
+export async function resolveSupervisorLimits(
+  profile: { readonly maxProcesses?: number | undefined; readonly idleTimeoutMs?: number | undefined },
+  deps: GlobalSettingsDependencies = {},
+): Promise<SupervisorLimits> {
+  const overrides = await readSupervisorLimitOverrides(deps)
+  return {
+    maxProcesses: profile.maxProcesses ?? overrides.maxProcesses ?? DEFAULT_LIMITS.maxProcesses,
+    idleTimeoutMs: profile.idleTimeoutMs ?? overrides.idleTimeoutMs ?? DEFAULT_LIMITS.idleTimeoutMs,
   }
 }
 
