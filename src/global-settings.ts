@@ -446,6 +446,18 @@ export async function readPermissionSelector(deps: GlobalSettingsDependencies = 
   return isClaudePermissionSelector(document.permissionSelector) ? document.permissionSelector : DEFAULT_CLAUDE_PERMISSION_SELECTOR
 }
 
+/** The selector this profile's Claude sessions use. The settings file is
+ *  shared by every profile under one DSH home, so a profile that names its
+ *  own selector in the `llm-claude` config keeps it whatever that file says;
+ *  an empty one reads the file as `readPermissionSelector` does. The Settings
+ *  dialog still edits the shared file, which such a profile then ignores. */
+export async function resolvePermissionSelector(
+  profile: '' | ClaudePermissionSelector,
+  deps: GlobalSettingsDependencies = {},
+): Promise<ClaudePermissionSelector> {
+  return profile === '' ? readPermissionSelector(deps) : profile
+}
+
 /** The mode a session runs under until it chooses one. A missing, unreadable,
  *  or malformed plugin settings file means Claude Code's classifier decides. */
 export async function readDefaultPermissionMode(deps: GlobalSettingsDependencies = {}): Promise<ClaudePermissionMode> {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readDefaultPermissionMode, readGlobalSettings, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, updateGlobalSettings } from '../src/global-settings.ts'
+import { readDefaultPermissionMode, readGlobalSettings, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, resolvePermissionSelector, updateGlobalSettings } from '../src/global-settings.ts'
 import { isGlobalSettingsView } from '../src/client/ClaudeCodeSettings.tsx'
 
 const roots: string[] = []
@@ -122,6 +122,21 @@ describe('Claude Code global settings registry', () => {
     await expect(updateGlobalSettings({ permissionSelector: 'host' }, { paths })).rejects.toThrow('Invalid value')
     await writeFile(paths.pluginSettingsFile, 'not json')
     await expect(readPermissionSelector({ paths })).resolves.toBe('plugin')
+  })
+
+  it('a profile permissionSelector overrides the global setting, and \'\' keeps it', async () => {
+    const paths = await fixture()
+    // No file: the global setting is the plugin's own selector.
+    await expect(resolvePermissionSelector('', { paths })).resolves.toBe('plugin')
+    await expect(resolvePermissionSelector('native', { paths })).resolves.toBe('native')
+    await updateGlobalSettings({ permissionSelector: 'native' }, { paths })
+    await expect(resolvePermissionSelector('', { paths })).resolves.toBe('native')
+    await expect(resolvePermissionSelector('plugin', { paths })).resolves.toBe('plugin')
+    // The override never writes the shared file other profiles read.
+    expect(JSON.parse(await readFile(paths.pluginSettingsFile, 'utf8'))).toEqual({ permissionSelector: 'native' })
+    await writeFile(paths.pluginSettingsFile, 'not json')
+    await expect(resolvePermissionSelector('', { paths })).resolves.toBe('plugin')
+    await expect(resolvePermissionSelector('native', { paths })).resolves.toBe('native')
   })
 
   it('offers every Claude Code permission mode as the default, auto unless changed', async () => {
