@@ -388,6 +388,38 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('mounts no dsh MCP server unless the profile lists DSH tools', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const catalog = runtime.supportedCommands(owner.agent)
+    await vi.waitFor(() => expect(transport.queries).toHaveLength(1))
+    expect(transport.queries[0]?.options.mcpServers).toBeUndefined()
+    transport.queries[0]!.push(init())
+    await catalog
+    await runtime.dispose()
+  })
+
+  it('mounts the listed DSH tools as the in-process dsh MCP server', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    Object.assign(owner.agent.ctx.tools, {
+      schemas: () => [
+        { name: 'memory_recall', description: 'recall', parameters: { type: 'object', properties: {} } },
+        { name: 'bash', description: 'shell', parameters: { type: 'object', properties: {} } },
+      ],
+    })
+    const runtime = supervisor(transport.create)
+    Object.assign(configs.get(runtime)!, { dshTools: ['memory_*'] })
+    const catalog = runtime.supportedCommands(owner.agent)
+    await vi.waitFor(() => expect(transport.queries).toHaveLength(1))
+    const server = transport.queries[0]?.options.mcpServers?.dsh as { type: string; name: string } | undefined
+    expect(server).toMatchObject({ type: 'sdk', name: 'dsh' })
+    transport.queries[0]!.push(init())
+    await catalog
+    await runtime.dispose()
+  })
+
   it('syncs a changed native DSH access mode before the next Query operation', async () => {
     const transport = factory()
     const owner = fakeAgent()
