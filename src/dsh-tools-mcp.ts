@@ -232,7 +232,9 @@ function bridgeTool(
  * item counts), so the model would be shown a weaker contract than DSH enforces
  * and learn each rule from a refused call. The zod schema still validates every
  * call. Only the listing the SDK's own server installs is wrapped; without it,
- * the SDK's listing stays as it is.
+ * the SDK's listing stays as it is. The top-level `$schema` dialect marker is
+ * left out: the SDK's own listing names draft-07 and DSH's names 2020-12, and
+ * the keywords DSH's tools use read the same under both.
  */
 function listVerbatim(instance: unknown, parameters: ReadonlyMap<string, ToolSchema['parameters']>): void {
   const handlers = (instance as { server?: { _requestHandlers?: unknown } } | undefined)?.server?._requestHandlers
@@ -246,7 +248,9 @@ function listVerbatim(instance: unknown, parameters: ReadonlyMap<string, ToolSch
       ...listed,
       tools: listed.tools.map(entry => {
         const own = parameters.get(entry.name)
-        return own !== undefined && (own as { type?: unknown }).type === 'object' ? { ...entry, inputSchema: own } : entry
+        if (own === undefined || (own as { type?: unknown }).type !== 'object') return entry
+        const { $schema: _dialect, ...inputSchema } = own as Record<string, unknown>
+        return { ...entry, inputSchema }
       }),
     }
   })

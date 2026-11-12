@@ -266,7 +266,10 @@ describe('DSH tools MCP bridge: listing and validation', () => {
     const { agent } = fixtureAgent()
     const { tools } = await handlersOf(createDshToolsMcpServer(agent, signal)).list()
     expect(tools.map(({ name }) => name)).toEqual(Object.keys(ORCHESTRATOR_PARAMETERS))
-    for (const { name, inputSchema } of tools) expect(inputSchema, name).toEqual(ORCHESTRATOR_PARAMETERS[name])
+    for (const { name, inputSchema } of tools) {
+      const { $schema: _dialect, ...parameters } = ORCHESTRATOR_PARAMETERS[name]!
+      expect(inputSchema, name).toEqual(parameters)
+    }
     const start = tools.find(({ name }) => name === 'orchestrator_workflow_start')!.inputSchema as {
       additionalProperties?: unknown
       properties: Record<string, { description?: string; minLength?: number; pattern?: string }>
