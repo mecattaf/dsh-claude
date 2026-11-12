@@ -55,7 +55,7 @@ describe('published package contract', () => {
     }
     expect(packageJson.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.1.7-rc.2')
     expect(dshDevelopmentVersions.length).toBeGreaterThan(0)
-    // The suite runs on the newest Host line the floor admits, as one
+    // The suite runs on the newest Host line the peer range admits, as one
     // version: DSH 0.2 Hosts ship 0.2.2-rc.1, and every development package
     // is on it.
     expect(new Set(dshDevelopmentVersions)).toEqual(new Set(['0.2.2-rc.1']))
