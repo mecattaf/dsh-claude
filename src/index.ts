@@ -55,7 +55,7 @@ import { detectWindowsSystemProxy, withSystemProxy, type ProxyEnv } from './syst
 import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usage.ts'
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
-import { createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
+import { createCompositionWatch, createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
 import { readDefaultPermissionMode, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute } from './global-settings.ts'
 
 // The steering contract is published for a plugin that wants to reach a running
@@ -486,20 +486,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       })
       // A new session records its preset in its header, not as a selection
       // event, and its composition lands after agent/created: wait for it.
+      const composition = createCompositionWatch()
       const stopCreated = ctx.on('agent/created', ({ agent }) => {
-        let attempts = 0
-        const check = (): void => {
-          const preset = ctx.agentPresets.composedPreset(agent.ctx)
-          if (preset !== undefined) {
-            void sync.sync(agent.id as string, preset)
-            return
-          }
-          if (++attempts < 25) setTimeout(check, 200).unref?.()
-        }
-        check()
+        composition.watch(() => ctx.agentPresets.composedPreset(agent.ctx), preset => {
+          void sync.sync(agent.id as string, preset)
+        })
         return undefined
       })
       return () => {
+        composition.dispose()
         stopSelected()
         stopCreated()
       }
@@ -723,11 +718,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       return cwd === undefined ? undefined : repositoryStatus.inspect(cwd)
     }, sessionId => reviewComments.list(sessionId), extraRepositoriesForClaudeSession, permissionModeForClaudeSession, () => permissionSelector, (listener) => {
       // The selection event lands before the preset mount does (see the
-      // metadata bridges), so wait for ownership to match the pick.
+      // metadata bridges), so wait for ownership to match the pick. A poll
+      // left over after unsubscribing would read an inactive context.
       const onPresetSelected = webCtx.on as (event: 'agent-preset/selected', handler: (sessionId: string, preset: string) => void) => () => void
-      return onPresetSelected('agent-preset/selected', (sessionId, preset) => {
+      let disposed = false
+      const stop = onPresetSelected('agent-preset/selected', (sessionId, preset) => {
         let attempts = 0
         const check = (): void => {
+          if (disposed) return
           attempts += 1
           if (ownsClaudeSession(sessionId) === (preset === CLAUDE_CODE_PRESET_ID) || attempts >= 25) {
             listener(sessionId)
@@ -737,6 +735,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         }
         check()
       })
+      return () => {
+        disposed = true
+        stop()
+      }
     })
   })
 }
