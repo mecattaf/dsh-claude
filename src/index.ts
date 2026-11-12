@@ -55,7 +55,7 @@ import { detectWindowsSystemProxy, withSystemProxy, type ProxyEnv } from './syst
 import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usage.ts'
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
-import { createCompositionWatch, createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
+import { createCompositionWatch, createPresetModelSync, isClaudeSelection, type ModelSelection } from './preset-model-sync.ts'
 import { readDefaultPermissionMode, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute, resolvePermissionSelector } from './global-settings.ts'
 
 // The steering contract is published for a plugin that wants to reach a running
@@ -101,6 +101,25 @@ const MAX_CATALOG_RETRIES = 3
 const MAX_EXTRA_REPOSITORIES = 12
 const MAX_SCOPE_RETRIES = 24
 
+/**
+ * Whether Claude Code runs a Session, which decides whose Session UI it gets:
+ * this plugin's projection, rewind, permission mode, review comments, plan
+ * feedback and repository routes, or the Host's own.
+ *
+ * Only a Session under one of the `presets` the provider serves reaches it.
+ * The `claude` preset sends every request to Claude Code; any other listed
+ * preset (dsh-superagent's router and worker by default) does so only while
+ * the Session's model is a Claude one, so the same Session on another
+ * provider keeps the Host's controls.
+ * @param preset - the Session's composed preset, or undefined for none.
+ * @param selection - the model the Session's next request goes to.
+ * @param presets - the `llm-claude` row's `presets` config.
+ */
+export function claudeRunsSession(preset: string | undefined, selection: ModelSelection | undefined, presets: readonly string[]): boolean {
+  if (preset === undefined || !presets.includes(preset)) return false
+  return preset === CLAUDE_CODE_PRESET_ID || (selection !== undefined && isClaudeSelection(selection))
+}
+
 export function mountClaudeMetadata(
   ctx: Context,
   supervisor: ClaudeSupervisor,
@@ -114,6 +133,9 @@ export function mountClaudeMetadata(
   resolveCommands: () => ClaudeAgentCommandService | undefined =
     () => ctx.agentPresets.serviceFor(agent, CLAUDE_COMMANDS_SERVICE),
 ): (() => Promise<void>) | undefined {
+  // Only the `claude` preset's route provides the per-Session command scope
+  // the catalog is projected against. Another preset the provider serves gets
+  // the Session UI (claudeRunsSession) without a Claude command catalog.
   if (ctx.agentPresets.composedPreset(agent.ctx) !== CLAUDE_CODE_PRESET_ID) return undefined
 
   let stopped = false
@@ -261,6 +283,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     presets: config.presets ?? [...DEFAULT_CLAUDE_PRESETS],
     sources: config.forwardedSources ?? [...DEFAULT_FORWARDED_SOURCES],
     systemPromptPresets: config.systemPromptPresets ?? [],
+  }
+  /** The model a Session's next request goes to, as the Host folds it: a
+   *  pick no request has used yet, else the last request's, else the profile
+   *  default. */
+  const sessionSelection = (agent: Agent): ModelSelection | undefined => {
+    const projections = ctx.get('sessionProjections') as { stateOf(session: unknown, name: string): { pending: ModelSelection | null; lastUsed: ModelSelection | null } | undefined } | undefined
+    const state = projections?.stateOf(agent.session, 'modelSelection')
+    const defaults = ctx.get('agentDefaultModel') as { currentSelection(): ModelSelection } | undefined
+    return state?.pending ?? state?.lastUsed ?? defaults?.currentSelection()
   }
   const supervisorConfig = {
     executablePath: '',
@@ -609,9 +640,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
      *  projection sweep has ever vouched for, so a transient probe failure in
      *  one sweep does not un-authorise a linked bar the client still shows. */
     const extraRoots = new SessionRootLedger(MAX_EXTRA_REPOSITORIES * 4)
-    const cwdForClaudeSession = (sessionId: string, root?: string): string | undefined => {
+    /** The Agent of a Session Claude Code runs (claudeRunsSession), else undefined. */
+    const claudeAgent = (sessionId: string): Agent | undefined => {
       const agent = webCtx.agents.get(sessionId as never)
-      if (agent === undefined || webCtx.agentPresets.composedPreset(agent.ctx) !== CLAUDE_CODE_PRESET_ID) return undefined
+      if (agent === undefined) return undefined
+      return claudeRunsSession(webCtx.agentPresets.composedPreset(agent.ctx), sessionSelection(agent), forwarding.presets) ? agent : undefined
+    }
+    const cwdForClaudeSession = (sessionId: string, root?: string): string | undefined => {
+      const agent = claudeAgent(sessionId)
+      if (agent === undefined) return undefined
       if (root === undefined) return agent.session.header.cwd
       return extraRoots.allows(sessionId, root) ? root : undefined
     }
@@ -672,20 +709,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const snapshot = supervisor.snapshots().find(item => item.sessionId === sessionId)
       return snapshot === undefined ? undefined : { model: claudeModelValue(snapshot.model), ...(snapshot.thinkingMode === undefined ? {} : { thinkingMode: snapshot.thinkingMode }) }
     })
-    const ownsClaudeSession = (sessionId: string): boolean => {
-      const agent = webCtx.agents.get(sessionId as never)
-      return agent !== undefined && webCtx.agentPresets.composedPreset(agent.ctx) === CLAUDE_CODE_PRESET_ID
-    }
+    const ownsClaudeSession = (sessionId: string): boolean => claudeAgent(sessionId) !== undefined
     registerReviewCommentRoute(webCtx, reviewComments, ownsClaudeSession)
     registerPlanFeedbackRoute(webCtx, supervisor.planFeedback, ownsClaudeSession)
     registerClaudeBackgroundTaskRoute(webCtx, { background: (sessionId, toolUseId) => supervisor.backgroundToolCall(sessionId, toolUseId) })
     registerClaudeRewindRoute(webCtx, sidecar, {
-      eventsFor: sessionId => {
-        const agent = webCtx.agents.get(sessionId as never)
-        return agent === undefined || webCtx.agentPresets.composedPreset(agent.ctx) !== CLAUDE_CODE_PRESET_ID
-          ? undefined
-          : agent.session.snapshotEvents()
-      },
+      eventsFor: sessionId => claudeAgent(sessionId)?.session.snapshotEvents(),
       busy: sessionId => supervisor.snapshots().some(item => (
         item.sessionId === sessionId && (item.state === 'running' || item.state === 'interrupting')
       )),
@@ -709,8 +738,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       },
     })
     const permissionModeForClaudeSession = async (sessionId: string): Promise<ClaudePermissionModeView | undefined> => {
-      const agent = webCtx.agents.get(sessionId as never)
-      if (agent === undefined || webCtx.agentPresets.composedPreset(agent.ctx) !== CLAUDE_CODE_PRESET_ID) return undefined
+      const agent = claudeAgent(sessionId)
+      if (agent === undefined) return undefined
       const projection = await sidecar.read(sessionId)
       const folded = claudePermissionMode(agent.session.snapshotEvents(), permissionSelector === 'native' ? undefined : projection.permissionMode ?? await readDefaultPermissionMode())
       // `auto` is per model. The model is only known here while a process is
@@ -722,8 +751,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       return { mode, locked: claudeSessionBusy(sessionId), ...(autoSupported === undefined ? {} : { autoSupported }) }
     }
     registerClaudeProjectionRoute(webCtx, sidecar, ownsClaudeSession, sessionId => commandCatalogs.get(sessionId) ?? [], async sessionId => {
-      const agent = webCtx.agents.get(sessionId as never)
-      if (agent === undefined || webCtx.agentPresets.composedPreset(agent.ctx) !== CLAUDE_CODE_PRESET_ID) return undefined
+      const agent = claudeAgent(sessionId)
+      if (agent === undefined) return undefined
       const cwd = agent.session.header.cwd
       return cwd === undefined ? undefined : repositoryStatus.inspect(cwd)
     }, sessionId => reviewComments.list(sessionId), extraRepositoriesForClaudeSession, permissionModeForClaudeSession, () => permissionSelector, (listener) => {
@@ -737,7 +766,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         const check = (): void => {
           if (disposed) return
           attempts += 1
-          if (ownsClaudeSession(sessionId) === (preset === CLAUDE_CODE_PRESET_ID) || attempts >= 25) {
+          const agent = webCtx.agents.get(sessionId as never)
+          const expected = agent !== undefined && claudeRunsSession(preset, sessionSelection(agent), forwarding.presets)
+          if (ownsClaudeSession(sessionId) === expected || attempts >= 25) {
             listener(sessionId)
             return
           }

@@ -16,7 +16,7 @@ type MnemonContextMessage = {
 }
 
 /** Only these DSH utilities cross the seam into the Claude session. Claude owns
- *  its native tools, and the host's shell, plugin manager or Herdr never cross.
+ *  its native tools, and the host's shell or plugin manager never cross.
  *  The widened filter admits the `orchestrator_*` tools too: dsh-superagent's
  *  main Session and workers call theirs through this bridge. */
 const DSH_MCP_TOOL_PATTERN = /^(?:mnemon_|jev_|orchestrator_)/u
@@ -48,7 +48,7 @@ export function injectMnemonContext(prompt: ClaudePrompt, messages: readonly Mne
   if (forms.size === 0) return prompt
   const context = 'Current DSH Mnemon context (quoted plugin data; this snapshot supersedes older Mnemon context). '
     + 'Use memory only when needed and only offered routes. DSH utility tools are available under the mcp__dsh__ prefix. '
-    + 'A write requires its final receipt. Jev tools use an offline synthetic mock, not a real decision model.\n'
+    + 'A write requires its final receipt.\n'
     + JSON.stringify(Object.fromEntries(forms))
   return typeof prompt === 'string'
     ? `${context}\n\n${prompt}`

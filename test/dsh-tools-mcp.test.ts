@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createDshToolsMcpServer, dshToolDefinitions, injectMnemonContext } from '../src/fleet-tools-mcp.ts'
+import { createDshToolsMcpServer, dshToolDefinitions, injectMnemonContext } from '../src/dsh-tools-mcp.ts'
 
 const tool = (name: string, description = `DSH utility ${name}`, parameters: Record<string, unknown> = { type: 'object', properties: {} }) => ({
   name,
@@ -99,7 +99,7 @@ describe('DSH tools MCP bridge', () => {
       { content: [{ type: 'text', text: 'older Mnemon view' }], source: { kind: 'user' } },
       { content: [{ type: 'text', text: 'route-7 wants a rollback' }], source: { kind: 'dsh-mnemon', form: 'view' } },
     ])
-    expect(prompt).toBe(`Current DSH Mnemon context (quoted plugin data; this snapshot supersedes older Mnemon context). Use memory only when needed and only offered routes. DSH utility tools are available under the mcp__dsh__ prefix. A write requires its final receipt. Jev tools use an offline synthetic mock, not a real decision model.\n${JSON.stringify({ view: 'route-7 wants a rollback' })}\n\nplan the deploy`)
+    expect(prompt).toBe(`Current DSH Mnemon context (quoted plugin data; this snapshot supersedes older Mnemon context). Use memory only when needed and only offered routes. DSH utility tools are available under the mcp__dsh__ prefix. A write requires its final receipt.\n${JSON.stringify({ view: 'route-7 wants a rollback' })}\n\nplan the deploy`)
   })
 
   it('returns the prompt unchanged when no Mnemon context was offered', () => {

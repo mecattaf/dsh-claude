@@ -3,6 +3,7 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import { CLAUDE_CODE_PRESET_ID } from './constants.ts'
+import { isClaudeSelection, type ModelSelection } from './preset-model-sync.ts'
 
 /**
  * Binds a preset to each top-level Agent its Host created without one.
@@ -18,6 +19,9 @@ import { CLAUDE_CODE_PRESET_ID } from './constants.ts'
  *
  * Insert it only in a profile whose default model is served by the bound
  * preset: the `claude` preset routes every request to the `claude` provider.
+ * As a backstop, an Agent whose default model is not a Claude one is left
+ * without the `claude` preset, so it runs on its own provider instead of
+ * failing every turn under Claude Code.
  */
 
 export const name = 'dsh-claude-headless-preset'
@@ -40,6 +44,13 @@ export function apply(ctx: Context, config: Config = {}): void {
     if ((agent.session.header.delegationDepth ?? 0) > 0) return undefined
     // A Host that composes presets already mounted this Agent's.
     if (ctx.agentPresets.composedPreset(agent.ctx) !== undefined) return undefined
+    // Optional: a Host without a default model gives nothing to check.
+    const defaults = ctx.get('agentDefaultModel') as { currentSelection(): ModelSelection | undefined } | undefined
+    const model = defaults?.currentSelection()
+    if (preset === CLAUDE_CODE_PRESET_ID && model !== undefined && !isClaudeSelection(model)) {
+      ctx.logger.info('dsh-claude: left %s without the claude preset: its default model is %s/%s', String(agent.id), model.provider, model.model)
+      return undefined
+    }
     await ctx.agentPresets.select(agent, preset)
     return undefined
   })
