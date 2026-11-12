@@ -339,13 +339,18 @@ declare class ClaudeSidecarRepository {
 }
 //#endregion
 //#region src/host-jobs.d.ts
+/** The kinds this plugin starts beyond the Host's own `bash`. Host 0.2 no
+ *  longer declares `subagent` (its subagents report as Session activity, not
+ *  jobs), so the plugin declares it for Claude's subagent tasks; on Host 0.1.7
+ *  the merge repeats the Host's identical declaration. */
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
+    subagent: 'subagent';
     claude: 'claude';
   }
 }
 type ClaudeHostJobStatus = 'completed' | 'failed' | 'stopped' | 'killed';
-/** `bash` and `subagent` are the Host's own kinds; `claude` covers the rest (workflows). */
+/** `bash` is the Host's own kind, `subagent` covers Claude's subagent tasks, and `claude` the rest (workflows). */
 type ClaudeHostJobKind = 'bash' | 'subagent' | 'claude';
 declare class ClaudeHostJobs {
   #private;
@@ -389,6 +394,8 @@ interface ClaudeSupervisorConfig {
   renderMode?: ClaudeRenderMode;
   /** After this long a blocking Bash call is moved to the background; 0 disables it. */
   foregroundBashBackgroundMs?: number;
+  /** Name prefixes of the DSH tools bridged into the Claude session; unset: the default prefixes. */
+  bridgedTools?: readonly string[];
 }
 type ClaudeTurnStreamEvent = {
   type: 'text-delta';
@@ -508,13 +515,32 @@ declare class ClaudeSupervisor {
   backgroundToolCall(sessionId: string, toolUseId: string): Promise<'moved' | 'not-running' | 'unavailable'>;
 }
 //#endregion
+//#region src/preset-model-sync.d.ts
+/**
+ * Keeps a blank session's model on the side its preset runs: a Claude model
+ * under the Claude preset, a non-Claude model under every other one.
+ *
+ * DSH presets carry no model, and a session's model is a separate selection
+ * that also becomes the profile default. Switching presets, or opening a new
+ * session after the default was last picked on the other side, would leave
+ * the picker on a model the preset cannot use. The last model seen on each
+ * side is remembered in memory and restored when a session crosses over.
+ */
+interface ModelSelection {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
+//#endregion
 //#region src/index.d.ts
 declare const name = "llm-claude";
 declare const inject: string[];
 interface Config {
   executablePath?: string;
   model?: string;
+  /** This profile's idle timeout; unset reads the plugin's global setting, then 30 minutes. */
   idleTimeoutMs?: number;
+  /** This profile's Claude process limit; unset reads the plugin's global setting, then 4. */
   maxProcesses?: number;
   /** Agent presets whose Sessions may use the `claude` provider. */
   presets?: string[];
@@ -524,10 +550,27 @@ interface Config {
   systemPromptPresets?: string[];
   /** This profile's permission selector; empty reads the plugin's global setting. */
   permissionSelector?: '' | ClaudePermissionSelector;
+  /** Name prefixes of the DSH tools that cross into the Claude session as MCP tools. */
+  bridgedTools?: string[];
 }
 declare const Config: z<Config>;
+/**
+ * Whether Claude Code runs a Session, which decides whose Session UI it gets:
+ * this plugin's projection, rewind, permission mode, review comments, plan
+ * feedback and repository routes, or the Host's own.
+ *
+ * Only a Session under one of the `presets` the provider serves reaches it.
+ * The `claude` preset sends every request to Claude Code; any other listed
+ * preset (dsh-superagent's router and worker by default) does so only while
+ * the Session's model is a Claude one, so the same Session on another
+ * provider keeps the Host's controls.
+ * @param preset - the Session's composed preset, or undefined for none.
+ * @param selection - the model the Session's next request goes to.
+ * @param presets - the `llm-claude` row's `presets` config.
+ */
+declare function claudeRunsSession(preset: string | undefined, selection: ModelSelection | undefined, presets: readonly string[]): boolean;
 declare function mountClaudeMetadata(ctx: Context, supervisor: ClaudeSupervisor, agent: Agent, model: string, publishCommands?: (commands: readonly ClaudeCommandView[]) => void, resolveCommands?: () => ClaudeAgentCommandService | undefined): (() => Promise<void>) | undefined;
 declare function apply(ctx: Context, config: Config): Promise<void>;
 //#endregion
-export { CLAUDE_STEERING_SERVICE, type ClaudeSteeringOutcome, type ClaudeSteeringService, Config, apply, inject, mountClaudeMetadata, name };
+export { CLAUDE_STEERING_SERVICE, type ClaudeSteeringOutcome, type ClaudeSteeringService, Config, apply, claudeRunsSession, inject, mountClaudeMetadata, name };
 //# sourceMappingURL=index.d.mts.map
