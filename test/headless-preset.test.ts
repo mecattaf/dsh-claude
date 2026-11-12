@@ -26,7 +26,7 @@ async function host(config?: headlessPreset.Config, composed?: string, defaultMo
   const fiber = root.plugin(headlessPreset, config)
   fibers.push(fiber)
   await fiber
-  const created = (agent: Agent) => root.serial('agent/created' as never, { agent, source: 'new' } as never) as Promise<unknown>
+  const created = (agent: Agent, source = 'startup') => root.serial('agent/created' as never, { agent, source } as never) as Promise<unknown>
   return { registry, fiber, created }
 }
 
@@ -58,6 +58,15 @@ describe('headless-preset', () => {
     const { registry, created } = await host()
     await created(agent())
     expect(registry.select).toHaveBeenCalledWith(expect.anything(), 'claude')
+  })
+
+  it('ignores a resumed agent', async () => {
+    // `dsh headless --session-id` resumes through agents.resume, which
+    // announces the Agent with source 'resume'.
+    const { registry, created } = await host({ preset: 'claude' })
+    await created(agent(), 'resume')
+    expect(registry.composedPreset).not.toHaveBeenCalled()
+    expect(registry.select).not.toHaveBeenCalled()
   })
 
   it('leaves an agent with a composed preset untouched', async () => {
