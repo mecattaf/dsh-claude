@@ -10,7 +10,7 @@ import type { ClaudePermissionMode } from '../src/permission-mode.ts'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-// The Host 0.1.7 Tooltip measures its bubble with a ResizeObserver, which
+// The Host Tooltip measures its bubble with a ResizeObserver, which
 // jsdom does not ship; an inert one lets the bubble mount.
 globalThis.ResizeObserver ??= class {
   observe(): void {}
@@ -134,11 +134,15 @@ describe('Claude permission select', () => {
     vi.useFakeTimers()
     try {
       mount({ mode: 'plan' })
-      // React synthesises onMouseEnter from the bubbling mouseover.
-      act(() => { trigger()?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      // React synthesises onPointerEnter from the bubbling pointerover. The Host
+      // 0.2 Tooltip raises a mouse hover only where matchMedia reports a device
+      // that can hover, and jsdom ships no matchMedia.
+      vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(any-hover: hover)', media: query }))
+      act(() => { trigger()?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' })) })
       act(() => { vi.advanceTimersByTime(300) })
       expect(document.body.textContent).toContain(en.permissionModePlanHint)
     } finally {
+      vi.unstubAllGlobals()
       vi.useRealTimers()
     }
   })

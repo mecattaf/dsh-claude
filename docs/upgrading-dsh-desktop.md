@@ -105,14 +105,32 @@ review, rewind, sidebar tabs, and the queue strip. Run the INSTALL.md smoke
 list in the official app before adopting 0.2.0-rc.1 as the baseline.
 
 
-## Current baseline: Desktop 2.0.15 / Host 0.1.7-rc.2
+## Development graph: Host 0.2.2-rc.1
+
+The development graph and the `@deepseek-ai/dsh-*` override are
+`0.2.2-rc.1` (`cordis` `4.1.0`), the line DSH 0.2 Hosts ship, so the suite
+runs on the Host contracts a deployed 0.2 Host has. Two of them changed
+under the plugin:
+
+- `ToolsService.execute` takes a whole batch (`{calls}` of `tool-call`
+  blocks) and returns `{results}`. The MCP tool bridge sends an input both
+  lines read; `test/dsh-tools-host.test.ts` drives it through the Host's own
+  SystemPrompt, ToolsService and `dsh-tool-executor-native`, not a stub.
+- `JobKindMap` no longer declares `subagent` (Host subagents report as
+  Session activity), so `src/host-jobs.ts` declares the kind it starts.
+
+`dsh-invariants` has no 0.2.2 release and nothing imports it, so it left
+the graph. The `dsh-*` peers keep the `>=0.1.7-rc.2` floor below; no suite
+runs on 0.1.7 any more.
+
+## Runtime floor: Desktop 2.0.15 / Host 0.1.7-rc.2
 
 The Host packages are unpacked at
 `E:\DSH Desktop\resources\app\node_modules\@deepseek-ai\` on the audited
-Windows installation. The development graph, overrides, and every `dsh-*`
-peer are `0.1.7-rc.2`; that is also the runtime floor, because this release
-changed contracts older Hosts cannot satisfy (see the 2.0.15 appendix). A
-0.1.5 Host stays on plugin 0.1.57. `cordis` is `4.0.4` in both.
+Windows installation. Every `dsh-*` peer is `>=0.1.7-rc.2`; that is the
+runtime floor, because this release changed contracts older Hosts cannot
+satisfy (see the 2.0.15 appendix). A 0.1.5 Host stays on plugin 0.1.57.
+`cordis` is `4.0.4` there.
 
 The npm rc.2 packages are published, and the unpublished `dsh-client-runtime`
 and `dsh-host-apiproxy` are gone from the graph: client types come from
