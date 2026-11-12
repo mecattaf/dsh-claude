@@ -55,6 +55,36 @@ export function injectMnemonContext(prompt: ClaudePrompt, messages: readonly Mne
     : [{ type: 'text', text: context }, ...prompt]
 }
 
+/** One bridged call's result, as the registry renders it. */
+type BridgedResult = { content: readonly ContentBlock[]; isError?: boolean }
+
+/**
+ * Run one bridged call through the Agent's tool executor.
+ *
+ * DSH 0.1.7 executed one call (`{callId, name, arguments}`) and returned its
+ * result. From DSH 0.2 the executor takes a whole batch (`{calls}` of raw
+ * `tool-call` blocks, arguments as JSON text) and returns `{results}`; a
+ * single-call input there throws `Tool batch execution failed` before any
+ * tool runs. The input carries both shapes, each version reads only its own
+ * fields, and the result is unwrapped by its shape. No `log` is passed: the
+ * call belongs to Claude's turn, which Claude's own transcript records.
+ */
+async function executeOne(
+  tools: ToolRuntime,
+  call: { callId: ToolCallId; name: string; arguments: Record<string, unknown>; agent: Agent; signal: AbortSignal },
+): Promise<BridgedResult> {
+  const input = {
+    ...call,
+    calls: [{ type: 'tool-call' as const, id: call.callId, name: call.name, arguments: JSON.stringify(call.arguments) }],
+  }
+  const settled = await (tools.execute as unknown as (input: unknown) => Promise<unknown>)(input)
+  const results = (settled as { results?: readonly { callId: ToolCallId; result: BridgedResult }[] }).results
+  if (!Array.isArray(results)) return settled as BridgedResult
+  const own = results.find(entry => entry.callId === call.callId) ?? results[0]
+  if (own === undefined) throw new Error(`DSH tool ${call.name} settled without a result`)
+  return own.result
+}
+
 /**
  * The DSH utilities the Claude session may call, as MCP tool definitions.
  *
@@ -75,7 +105,7 @@ export function dshToolDefinitions(agent: Agent, lifetime: AbortSignal): SdkMcpT
         const signals: AbortSignal[] = [lifetime]
         const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal
         if (extraSignal !== undefined) signals.push(extraSignal)
-        const result = await tools.execute({
+        const result = await executeOne(tools, {
           callId: randomUUID() as ToolCallId,
           name,
           arguments: args,

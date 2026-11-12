@@ -43,6 +43,53 @@ describe('DSH tools MCP bridge', () => {
     expect(server).toMatchObject({ type: 'sdk', name: 'dsh' })
   })
 
+  it('runs a call through a DSH 0.2 batch executor and unwraps its result', async () => {
+    const { signal } = lifetime()
+    const seen: unknown[] = []
+    const tools = {
+      schemas: () => [tool('orchestrator_read', 'read', { type: 'object', properties: { resource: { type: 'string' } } })],
+      execute: async (input: { calls?: { id: string; name: string; arguments: string }[] }) => {
+        seen.push(input)
+        if (!Array.isArray(input.calls)) throw new Error('Tool batch execution failed')
+        return {
+          results: input.calls.map(call => ({
+            callId: call.id,
+            result: { content: [{ type: 'text' as const, text: `ran ${call.name} ${call.arguments}` }], isError: false },
+          })),
+          additionalContexts: [],
+          concluded: false,
+        }
+      },
+    }
+    const [definition] = dshToolDefinitions({ ctx: { tools } } as unknown as Agent, signal)
+    const reply = await definition!.handler({ resource: 'triggers' }, {} as never)
+    expect(reply).toEqual({ content: [{ type: 'text', text: 'ran orchestrator_read {"resource":"triggers"}' }] })
+    expect(seen).toHaveLength(1)
+    expect((seen[0] as { calls: unknown[] }).calls).toEqual([
+      { type: 'tool-call', id: expect.any(String), name: 'orchestrator_read', arguments: '{"resource":"triggers"}' },
+    ])
+  })
+
+  it('keeps a DSH 0.2 tool error as an MCP error result', async () => {
+    const { signal } = lifetime()
+    const tools = {
+      schemas: () => [tool('orchestrator_route')],
+      execute: async (input: { calls: { id: string }[] }) => ({
+        results: [{ callId: input.calls[0]!.id, result: { content: [{ type: 'text' as const, text: 'no such trigger' }], isError: true } }],
+        additionalContexts: [],
+        concluded: false,
+      }),
+    }
+    const [definition] = dshToolDefinitions({ ctx: { tools } } as unknown as Agent, signal)
+    expect(await definition!.handler({}, {} as never)).toEqual({ content: [{ type: 'text', text: 'no such trigger' }], isError: true })
+  })
+
+  it('still runs a call through a single-call (DSH 0.1.7) executor', async () => {
+    const { signal } = lifetime()
+    const [definition] = dshToolDefinitions(agentWith('mnemon_recall'), signal)
+    expect(await definition!.handler({}, {} as never)).toEqual({ content: [{ type: 'text', text: 'ran mnemon_recall' }] })
+  })
+
   it('leaves a native slash command prompt untouched', () => {
     expect(injectMnemonContext('/skill my-skill', [])).toBe('/skill my-skill')
   })
