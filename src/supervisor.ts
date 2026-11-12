@@ -1292,7 +1292,7 @@ export class ClaudeSupervisor {
       pathToClaudeCodeExecutable: this.#config.executablePath,
       // The in-process DSH tool bridge crosses the seam under its own name;
       // only the tools its filter admits reach this session.
-      mcpServers: { dsh: createDshToolsMcpServer(agent, lifetime.signal) },
+      mcpServers: { dsh: createDshToolsMcpServer(agent, lifetime.signal, message => { this.#logger?.warn(message) }) },
       cwd,
       settingSources: ['user', 'project', 'local'],
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(systemAppend) },

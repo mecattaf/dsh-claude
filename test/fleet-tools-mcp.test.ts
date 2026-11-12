@@ -37,6 +37,15 @@ describe('DSH tools MCP bridge', () => {
     expect(definitions.map(({ name }) => name)).toEqual(['mnemon_recall'])
   })
 
+  it('leaves out, with a warning, a bridged tool whose parameters are not an object schema', () => {
+    const { signal } = lifetime()
+    const agent = { ctx: { tools: { schemas: () => [tool('orchestrator_odd', 'odd', { type: 'string' }), tool('orchestrator_route')], execute: async () => ({ content: [] }) } } } as unknown as Agent
+    const warnings: string[] = []
+    const definitions = dshToolDefinitions(agent, signal, message => { warnings.push(message) })
+    expect(definitions.map(({ name }) => name)).toEqual(['orchestrator_route'])
+    expect(warnings).toEqual([expect.stringContaining('orchestrator_odd is not bridged')])
+  })
+
   it('creates the in-process dsh MCP server', () => {
     const { signal } = lifetime()
     const server = createDshToolsMcpServer(agentWith('orchestrator_route'), signal)
