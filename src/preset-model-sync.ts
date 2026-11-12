@@ -72,6 +72,9 @@ export function createPresetModelSync(deps: PresetModelSyncDeps) {
   }
 }
 
+// About five seconds for a new Agent's preset composition to land. Fixed, not
+// configured: the poll only bounds how long an Agent no Host composes is
+// watched, and it gives up quietly.
 const COMPOSITION_POLL_MS = 200
 const COMPOSITION_POLL_ATTEMPTS = 25
 

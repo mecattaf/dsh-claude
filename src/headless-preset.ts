@@ -3,21 +3,28 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import { CLAUDE_CODE_PRESET_ID } from './constants.ts'
+import { isClaudeSelection, type ModelSelection } from './preset-model-sync.ts'
 
 /**
  * Binds a preset to each top-level Agent its Host created without one.
  *
  * Only the web and API session controllers mount a preset when they create an
  * Agent. The `dsh headless` one-shot runner composes none, so under it the
- * `claude` provider refuses every turn ("available only to the claude
- * preset"). This plugin selects the configured preset on `agent/created`
- * through `agentPresets.select`, the registry method the Client's preset
- * picker calls; the selection is logged as `agent-preset/selected` before
- * the first turn. It is opt-in: a profile inserts the row, together with an
- * `agent-preset-registry` row, which the headless bundle does not load.
+ * `claude` provider refuses every turn: a preset-free Session is not one
+ * listed in `llm-claude.presets`. This plugin selects the configured preset
+ * on `agent/created` through `agentPresets.select`, the registry method the
+ * Client's preset picker calls; the selection is logged as
+ * `agent-preset/selected` before the first turn. It is opt-in: a profile
+ * inserts the row, together with an `agent-preset-registry` row, which the
+ * headless bundle does not load. Only a newly created Agent is bound: a
+ * resumed Session keeps what its log records, and the registry locks the
+ * preset of one that has taken a turn.
  *
  * Insert it only in a profile whose default model is served by the bound
  * preset: the `claude` preset routes every request to the `claude` provider.
+ * As a backstop, an Agent whose default model is not a Claude one is left
+ * without the `claude` preset, so it runs on its own provider instead of
+ * failing every turn under Claude Code.
  */
 
 export const name = 'dsh-claude-headless-preset'
@@ -34,12 +41,20 @@ export const Config: z<Config> = z.object({
 
 export function apply(ctx: Context, config: Config = {}): void {
   const preset = config.preset ?? CLAUDE_CODE_PRESET_ID
-  ctx.on('agent/created', async ({ agent }) => {
+  ctx.on('agent/created', async ({ agent, source }) => {
+    if (source !== 'startup') return undefined
     // A subagent joins the revision its parent retained (composeFrom); one
     // under a preset-free parent stays preset-free, like its parent's world.
     if ((agent.session.header.delegationDepth ?? 0) > 0) return undefined
     // A Host that composes presets already mounted this Agent's.
     if (ctx.agentPresets.composedPreset(agent.ctx) !== undefined) return undefined
+    // Optional: a Host without a default model gives nothing to check.
+    const defaults = ctx.get('agentDefaultModel') as { currentSelection(): ModelSelection | undefined } | undefined
+    const model = defaults?.currentSelection()
+    if (preset === CLAUDE_CODE_PRESET_ID && model !== undefined && !isClaudeSelection(model)) {
+      ctx.logger.info('dsh-claude: left %s without the claude preset: its default model is %s/%s', String(agent.id), model.provider, model.model)
+      return undefined
+    }
     await ctx.agentPresets.select(agent, preset)
     return undefined
   })

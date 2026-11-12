@@ -241,6 +241,17 @@ const toolResultMessage = {
   tool_use_result: 'listed',
 } as SDKMessage
 
+/** The tool names the in-process dsh MCP server of a query lists, through its own tools/list handler. */
+async function listedDshTools(options: unknown): Promise<string[]> {
+  const dsh = (options as { mcpServers?: { dsh?: { instance?: unknown } } }).mcpServers?.dsh
+  const handlers = (dsh?.instance as { server: { _requestHandlers: Map<string, (request: unknown, extra: unknown) => Promise<unknown>> } } | undefined)
+    ?.server._requestHandlers
+  const list = handlers?.get('tools/list')
+  if (list === undefined) return []
+  const listed = await list({ method: 'tools/list', params: {} }, {}) as { tools: { name: string }[] }
+  return listed.tools.map(({ name }) => name)
+}
+
 async function collect(stream: AsyncIterable<ClaudeTurnStreamEvent>): Promise<ClaudeTurnStreamEvent[]> {
   const events: ClaudeTurnStreamEvent[] = []
   for await (const event of stream) events.push(event)
@@ -1238,6 +1249,118 @@ describe('Claude supervisor', () => {
     transport.queries[2]!.push(init())
     transport.queries[2]!.push(result('four'))
     await collect(dropped)
+    await runtime.dispose()
+  })
+
+  it('rebuilds the query when the bridged DSH tool set changes', async () => {
+    // The in-process MCP server lists the Agent's DSH tools when the process
+    // starts, so a tool a plugin registers later stays invisible until the
+    // query is rebuilt; the bound Claude session keeps context across it.
+    const transport = factory()
+    const owner = fakeAgent()
+    const tools = owner.agent.ctx.tools as unknown as { schemas: () => { name: string; description: string; parameters: unknown }[] }
+    let registered: string[] = ['orchestrator_read']
+    tools.schemas = () => registered.map(name => ({ name, description: name, parameters: { type: 'object', properties: {} } }))
+    const runtime = supervisor(transport.create)
+    const nextTurn = (turn: number) => owner.events.push(
+      { type: 'turn/start', data: { turn }, seq: owner.events.length, time: turn * 2 },
+      { type: 'step/start', data: { turn, step: 1 }, seq: owner.events.length + 1, time: turn * 2 + 1 },
+    )
+    const first = await runtime.runTurn({ agent: owner.agent, prompt: 'one' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(result('one'))
+    await collect(first)
+
+    // A tool the bridge does not cross changes nothing for the Claude session.
+    nextTurn(2)
+    registered = ['orchestrator_read', 'host_shell']
+    const unbridged = await runtime.runTurn({ agent: owner.agent, prompt: 'two' })
+    query.push(result('two'))
+    await collect(unbridged)
+    expect(transport.queries).toHaveLength(1)
+
+    nextTurn(3)
+    registered = ['orchestrator_workflow_start', 'host_shell', 'orchestrator_read']
+    const added = await runtime.runTurn({ agent: owner.agent, prompt: 'three' })
+    expect(transport.queries).toHaveLength(2)
+    expect(query.options.abortController?.signal.aborted).toBe(true)
+    const next = transport.queries[1]!
+    expect(next.options).toMatchObject({ resume: 'claude-session-1', mcpServers: { dsh: { type: 'sdk', name: 'dsh' } } })
+    // The rebuilt server lists the newly registered tool, not a stale list.
+    expect(await listedDshTools(next.options)).toEqual(['orchestrator_workflow_start', 'orchestrator_read'])
+    next.push(init())
+    next.push(result('three'))
+    await collect(added)
+
+    // Registration order alone is not a change.
+    nextTurn(4)
+    registered = ['orchestrator_read', 'orchestrator_workflow_start']
+    const reordered = await runtime.runTurn({ agent: owner.agent, prompt: 'four' })
+    next.push(result('four'))
+    await collect(reordered)
+    expect(transport.queries).toHaveLength(2)
+
+    nextTurn(5)
+    registered = ['orchestrator_read']
+    const removed = await runtime.runTurn({ agent: owner.agent, prompt: 'five' })
+    expect(transport.queries).toHaveLength(3)
+    transport.queries[2]!.push(init())
+    transport.queries[2]!.push(result('five'))
+    await collect(removed)
+    await runtime.dispose()
+  })
+
+  it('keys the bridged DSH tool set on the configured prefixes, and keeps the turn when the list cannot be read', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const tools = owner.agent.ctx.tools as unknown as { schemas: () => { name: string; description: string; parameters: unknown }[] }
+    let registered: string[] | Error = ['notes_find']
+    tools.schemas = () => {
+      if (registered instanceof Error) throw registered
+      return registered.map(name => ({ name, description: name, parameters: { type: 'object', properties: {} } }))
+    }
+    const runtime = supervisor(transport.create)
+    ;(configs.get(runtime) as unknown as { bridgedTools?: readonly string[] }).bridgedTools = ['notes_']
+    const nextTurn = (turn: number) => owner.events.push(
+      { type: 'turn/start', data: { turn }, seq: owner.events.length, time: turn * 2 },
+      { type: 'step/start', data: { turn, step: 1 }, seq: owner.events.length + 1, time: turn * 2 + 1 },
+    )
+    const first = await runtime.runTurn({ agent: owner.agent, prompt: 'one' })
+    const query = transport.queries[0]!
+    expect(await listedDshTools(query.options)).toEqual(['notes_find'])
+    query.push(init())
+    query.push(result('one'))
+    await collect(first)
+
+    // A default-prefix tool is not bridged under this config, so it changes nothing.
+    nextTurn(2)
+    registered = ['notes_find', 'orchestrator_read']
+    const unbridged = await runtime.runTurn({ agent: owner.agent, prompt: 'two' })
+    query.push(result('two'))
+    await collect(unbridged)
+    expect(transport.queries).toHaveLength(1)
+
+    nextTurn(3)
+    registered = ['notes_find', 'notes_write', 'orchestrator_read']
+    const added = await runtime.runTurn({ agent: owner.agent, prompt: 'three' })
+    expect(transport.queries).toHaveLength(2)
+    const next = transport.queries[1]!
+    expect(await listedDshTools(next.options)).toEqual(['notes_find', 'notes_write'])
+    next.push(init())
+    next.push(result('three'))
+    await collect(added)
+
+    // A registry that cannot project its list fails no turn: the rebuilt
+    // query gets no DSH tools.
+    nextTurn(4)
+    registered = new Error('tool "plugin_x" parameters must be lossless JSON before schema projection')
+    const unreadable = await runtime.runTurn({ agent: owner.agent, prompt: 'four' })
+    expect(transport.queries).toHaveLength(3)
+    expect(await listedDshTools(transport.queries[2]!.options)).toEqual([])
+    transport.queries[2]!.push(init())
+    transport.queries[2]!.push(result('four'))
+    await collect(unreadable)
     await runtime.dispose()
   })
 

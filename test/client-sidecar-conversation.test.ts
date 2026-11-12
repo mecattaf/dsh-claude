@@ -58,8 +58,9 @@ async function loadConversationNodeAssembler(): Promise<typeof ConversationNodeA
   class EmptyService {}
   class EmptyContext {}
   class EmptySlotCore {}
-  // Host 0.1.7 ships the assembler inside the conversation client bundle, whose
-  // components touch React and the store while the module loads.
+  // The Host ships the assembler inside the conversation client bundle, whose
+  // components touch React and the store while the module loads; from Host 0.2
+  // its draft schemas also take `zod` from the shared module loader.
   const dependencies: Record<string, unknown> = {
     '@deepseek-ai/cordis': { Service: EmptyService, Context: EmptyContext },
     '@deepseek-ai/dsh-client-ui-slots': { SlotCore: EmptySlotCore },
@@ -68,6 +69,7 @@ async function loadConversationNodeAssembler(): Promise<typeof ConversationNodeA
     'react/jsx-runtime': await import('react/jsx-runtime'),
     '@deepseek-ai/dsh-client-store': await import('@deepseek-ai/dsh-client-store'),
     '@deepseek-ai/dsh-client-ui-primitives': await import('@deepseek-ai/dsh-client-ui-primitives'),
+    'zod': await import('zod'),
   }
   Object.assign(globalThis, {
     window: {

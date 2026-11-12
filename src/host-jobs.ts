@@ -15,14 +15,19 @@ import { closeSync, openSync, readSync } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 import type { JobHandle, JobOutcome, JobRegistry, JobSourceRead } from '@deepseek-ai/dsh-jobs'
 
+/** The kinds this plugin starts beyond the Host's own `bash`. Host 0.2 no
+ *  longer declares `subagent` (its subagents report as Session activity, not
+ *  jobs), so the plugin declares it for Claude's subagent tasks; on Host 0.1.7
+ *  the merge repeats the Host's identical declaration. */
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
+    subagent: 'subagent'
     claude: 'claude'
   }
 }
 
 export type ClaudeHostJobStatus = 'completed' | 'failed' | 'stopped' | 'killed'
-/** `bash` and `subagent` are the Host's own kinds; `claude` covers the rest (workflows). */
+/** `bash` is the Host's own kind, `subagent` covers Claude's subagent tasks, and `claude` the rest (workflows). */
 export type ClaudeHostJobKind = 'bash' | 'subagent' | 'claude'
 
 export function hostJobKind(taskType: string | undefined): ClaudeHostJobKind {
