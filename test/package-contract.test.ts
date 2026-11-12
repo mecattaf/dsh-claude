@@ -147,6 +147,17 @@ describe('published package contract', () => {
     expect(host).toContain('registerClaudeClientDiagnosticsRoute(webCtx)')
   })
 
+  // A host plugin a profile inserts by name resolves through the package
+  // exports, so each entry must be both built and exported.
+  it('builds and exports every host plugin entry', async () => {
+    const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
+    const buildConfig = await readFile(join(root, 'tsdown.config.ts'), 'utf8')
+    for (const entry of ['preset-route', 'headless-preset']) {
+      expect(buildConfig).toContain(`'${entry}': 'src/${entry}.ts'`)
+      expect(packageJson.exports[`./${entry}`]).toEqual({ types: `./lib/${entry}.d.mts`, default: `./lib/${entry}.mjs` })
+    }
+  })
+
   it('uses the npm package name in the DSH host and browser bundles', async () => {
     const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { name: string }
     const [patch, buildConfig] = await Promise.all([

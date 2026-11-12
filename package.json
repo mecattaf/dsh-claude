@@ -26,6 +26,10 @@
       "types": "./lib/preset-route.d.mts",
       "default": "./lib/preset-route.mjs"
     },
+    "./headless-preset": {
+      "types": "./lib/headless-preset.d.mts",
+      "default": "./lib/headless-preset.mjs"
+    },
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },

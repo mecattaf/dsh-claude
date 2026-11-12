@@ -27,6 +27,7 @@ export default defineConfig([
     entry: {
       index: 'src/index.ts',
       'preset-route': 'src/preset-route.ts',
+      'headless-preset': 'src/headless-preset.ts',
       bin: 'src/bin.ts',
     },
     outDir: 'lib',
