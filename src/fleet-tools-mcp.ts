@@ -17,8 +17,8 @@ type MnemonContextMessage = {
 
 /** Only these DSH utilities cross the seam into the Claude session. Claude owns
  *  its native tools, and the host's shell, plugin manager or Herdr never cross.
- *  The widened filter admits the `orchestrator_*` tools too: the floor's main
- *  Session calls `orchestrator_route` through this bridge. */
+ *  The widened filter admits the `orchestrator_*` tools too: dsh-superagent's
+ *  main Session and workers call theirs through this bridge. */
 const DSH_MCP_TOOL_PATTERN = /^(?:mnemon_|jev_|orchestrator_)/u
 const UNSUPPORTED_CONTENT_TEXT = 'This DSH utility bridge supports text results only.'
 
