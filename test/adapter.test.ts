@@ -373,7 +373,7 @@ describe('DSH stream mapping', () => {
     const adapter = new ClaudeCodeAdapter(supervisorEvents([]), { currentInitiator: () => agent, get: () => agent }, attachmentStore(), () => 'standard')
     await expect(async () => {
       for await (const _chunk of adapter.stream(options())) { /* no chunks expected */ }
-    }).rejects.toThrow(/available only to the claude preset/)
+    }).rejects.toThrow(/available only to the presets claude, dsh-superagent-router, dsh-superagent-worker/)
   })
 
   it('maps cancellation during image resolution without starting Claude', async () => {
@@ -652,5 +652,105 @@ describe('DSH stream mapping under the native renderer', () => {
       { type: 'block-end', index: 0, block: { type: 'text', text: 'partial' } },
       { type: 'finish', reason: { kind: 'aborted', failure: { code: 'aborted', message: 'Claude Code turn aborted' } } },
     ])
+  })
+})
+
+/** A message the dsh-superagent plugin delivers (upstream src/app/delivery.ts):
+ *  `queue`/`steer` as a relay, `inject` as a notice with its one-line summary. */
+const superagent = (text: string, form: 'relay' | 'notice' = 'relay') => ({
+  id: crypto.randomUUID(),
+  role: 'user',
+  content: [{ type: 'text', text }],
+  source: form === 'relay' ? { kind: 'dsh-superagent', form } : { kind: 'dsh-superagent', form, summary: `notice: ${text.slice(0, 20)}` },
+}) as unknown as Message
+
+const sourced = (text: string, source: Record<string, unknown>) => ({
+  id: crypto.randomUUID(),
+  role: 'user',
+  content: [{ type: 'text', text }],
+  source,
+}) as unknown as Message
+
+describe('dsh-superagent message forwarding', () => {
+  const workerReport = JSON.stringify({ kind: 'worker_report', ticket: { id: 't1' }, state: 'done', summary: 'built it' })
+  const ticketEnded = JSON.stringify({ ticket_ended: { id: 't1', state: 'ended' } })
+
+  async function promptFor(messages: Message[], adapterOptions: { presets?: string[]; sources?: string[]; preset?: string } = {}) {
+    const { supervisor, calls } = capturingSupervisor()
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(),
+      () => adapterOptions.preset ?? 'dsh-superagent-router', undefined, undefined, undefined, undefined,
+      { ...(adapterOptions.presets === undefined ? {} : { presets: adapterOptions.presets }), ...(adapterOptions.sources === undefined ? {} : { sources: adapterOptions.sources }) })
+    for await (const _chunk of adapter.stream(options(messages))) { /* drain */ }
+    expect(calls).toHaveLength(1)
+    return calls[0]?.prompt
+  }
+
+  it('forwards a superagent relay as the turn message', async () => {
+    await expect(resolveDirectUserPrompt([superagent('work on ticket t1')], attachmentStore())).resolves.toBe('work on ticket t1')
+    await expect(promptFor([superagent('work on ticket t1')])).resolves.toBe('work on ticket t1')
+  })
+
+  it('keeps instructions, Mnemon and other producers out of newest-wins selection', async () => {
+    await expect(resolveDirectUserPrompt([
+      superagent('the relay'),
+      sourced('AGENTS.md says hello', { kind: 'agent-instructions', form: 'instructions' }),
+      sourced('Mnemon view', { kind: 'dsh-mnemon', form: 'snapshot', sections: [] }),
+      sourced('a schedule fired', { kind: 'schedule' }),
+      sourced('request-only input', undefined as never),
+    ], attachmentStore())).resolves.toBe('the relay')
+  })
+
+  it('never lets an injected notice become the turn message', async () => {
+    await expect(resolveDirectUserPrompt([superagent(workerReport), superagent(ticketEnded, 'notice')], attachmentStore()))
+      .resolves.toBe(workerReport)
+  })
+
+  it('refuses a step that holds only notices', async () => {
+    await expect(resolveDirectUserPrompt([superagent(ticketEnded, 'notice')], attachmentStore()))
+      .rejects.toThrow(/no direct human input or relay/)
+  })
+
+  it('answers only the newest person message, as before', async () => {
+    await expect(promptFor([user('first'), user('second')], { preset: 'claude' })).resolves.toBe('second')
+  })
+
+  it('honours a configured source list', async () => {
+    const { supervisor } = capturingSupervisor()
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(), claudePreset,
+      undefined, undefined, undefined, undefined, { sources: ['user'] })
+    await expect(async () => {
+      for await (const _chunk of adapter.stream(options([superagent('work on t1')]))) { /* drain */ }
+    }).rejects.toThrow(/no direct human input or relay/)
+    await expect(resolveDirectUserPrompt([sourced('fired', { kind: 'schedule' })], attachmentStore(), undefined, ['schedule']))
+      .resolves.toBe('fired')
+  })
+})
+
+describe('claude provider preset allow-list', () => {
+  async function run(preset: string, presets?: string[]) {
+    const { supervisor, calls } = capturingSupervisor()
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(), () => preset,
+      undefined, undefined, undefined, undefined, presets === undefined ? {} : { presets })
+    for await (const _chunk of adapter.stream(options())) { /* drain */ }
+    return calls
+  }
+
+  it('serves the claude preset and the dsh-superagent router and worker presets by default', async () => {
+    for (const preset of ['claude', 'dsh-superagent-router', 'dsh-superagent-worker']) {
+      await expect(run(preset)).resolves.toHaveLength(1)
+    }
+  })
+
+  it('refuses any other preset, and a session whose preset has not settled', async () => {
+    await expect(run('standard')).rejects.toThrow(/provider claude is available only to the presets claude, dsh-superagent-router, dsh-superagent-worker/)
+    const adapter = new ClaudeCodeAdapter(supervisorEvents([]), { currentInitiator: () => agent, get: () => agent }, attachmentStore(), () => undefined)
+    await expect(async () => {
+      for await (const _chunk of adapter.stream(options())) { /* drain */ }
+    }).rejects.toThrow(/available only to/)
+  })
+
+  it('follows a configured preset list', async () => {
+    await expect(run('dsh-superagent-router', ['claude'])).rejects.toThrow(/available only to the claude preset \(llm-claude\.presets\)/)
+    await expect(run('my-preset', ['claude', 'my-preset'])).resolves.toHaveLength(1)
   })
 })

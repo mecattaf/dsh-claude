@@ -51,6 +51,25 @@ describe('preset model sync', () => {
     expect(deepseekOnly.deps.selectModel).toHaveBeenCalledWith({ sessionId: 's', provider: 'claude', model: 'default' })
   })
 
+  it('never moves a blank session under a preset that may run on either side', async () => {
+    const eitherSidePresets = ['claude', 'dsh-superagent-router', 'dsh-superagent-worker']
+    // dsh-superagent seeds the role model of its main Session and workers; a
+    // Claude pick under its presets must not be moved to the other side.
+    const router = harness(opus, { eitherSidePresets })
+    await router.sync.sync('s', 'dsh-superagent-router')
+    expect(router.deps.selectModel).not.toHaveBeenCalled()
+    const worker = harness(deepseek, { eitherSidePresets })
+    await worker.sync.sync('s', 'dsh-superagent-worker')
+    expect(worker.deps.selectModel).not.toHaveBeenCalled()
+    // The Claude preset itself still wants Claude, and other presets the other side.
+    const claude = harness(deepseek, { eitherSidePresets })
+    await claude.sync.sync('s', 'claude')
+    expect(claude.deps.selectModel).toHaveBeenCalledWith({ sessionId: 's', provider: 'claude', model: 'default' })
+    const standard = harness(opus, { eitherSidePresets })
+    await standard.sync.sync('s', 'standard')
+    expect(standard.deps.selectModel).toHaveBeenCalledWith({ sessionId: 's', provider: 'deepseek-account', model: 'deepseek-flash' })
+  })
+
   it('touches only blank sessions and survives a refused selection', async () => {
     const started = harness(opus, { isBlank: () => false })
     await started.sync.sync('s', 'standard')

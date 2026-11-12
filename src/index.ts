@@ -11,6 +11,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER_IDS, CLAUDE_STEERING_SERVICE } from './constants.ts'
+import { DEFAULT_CLAUDE_PRESETS, DEFAULT_FORWARDED_SOURCES } from './forwarding.ts'
 import { CLAUDE_COMMANDS_SERVICE, projectClaudeCommands, type ClaudeAgentCommandService, type ClaudeCommandView } from './command-bridge.ts'
 import { ClaudeSidecarRepository } from './sidecar.ts'
 import { resolveClaudeExecutable } from './executable.ts'
@@ -70,6 +71,10 @@ export interface Config {
   model?: string
   idleTimeoutMs?: number
   maxProcesses?: number
+  /** Agent presets whose Sessions may use the `claude` provider. */
+  presets?: string[]
+  /** Message source kinds whose user-role messages reach the Claude turn. */
+  forwardedSources?: string[]
 }
 
 export const Config: z<Config> = z.object({
@@ -77,6 +82,8 @@ export const Config: z<Config> = z.object({
   model: z.string().default('default'),
   idleTimeoutMs: z.number().min(1_000).max(2_147_483_647).default(30 * 60 * 1_000),
   maxProcesses: z.number().step(1).min(1).default(4),
+  presets: z.array(z.string()).default([...DEFAULT_CLAUDE_PRESETS]),
+  forwardedSources: z.array(z.string()).default([...DEFAULT_FORWARDED_SOURCES]),
 })
 
 const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (preset route not mounted?)'
@@ -242,6 +249,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     idleTimeoutMs: config.idleTimeoutMs ?? 30 * 60 * 1_000,
     maxProcesses: config.maxProcesses ?? 4,
   }
+  // Which Sessions the provider serves and which messages reach their turn.
+  const forwarding = {
+    presets: config.presets ?? [...DEFAULT_CLAUDE_PRESETS],
+    sources: config.forwardedSources ?? [...DEFAULT_FORWARDED_SOURCES],
+  }
   const supervisorConfig = {
     executablePath: '',
     defaultModel: config.model ?? 'default',
@@ -306,7 +318,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     executableResolved = true
     ctx.llm.registerAdapter(
       [...CLAUDE_CODE_PROVIDER_IDS],
-      createClaudeCodeAdapter(supervisor, ctx.agents, ctx.attachments, agent => ctx.agentPresets.composedPreset(agent.ctx), sessionId => reviewComments.drain(sessionId), () => readRenderMode(), request => summarizeSessionTitle(supervisorConfig.executablePath, request), () => probeClaudeModels(supervisorConfig.executablePath)),
+      createClaudeCodeAdapter(supervisor, ctx.agents, ctx.attachments, agent => ctx.agentPresets.composedPreset(agent.ctx), sessionId => reviewComments.drain(sessionId), () => readRenderMode(), request => summarizeSessionTitle(supervisorConfig.executablePath, request), () => probeClaudeModels(supervisorConfig.executablePath), forwarding),
     )
     // The profile's default model is written by whatever the user last picked,
     // so it can hold a spelling a later lineup no longer lists -- every new
@@ -465,6 +477,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         },
         defaultClaudeModel: () => supervisorConfig.defaultModel,
         warn: message => { ctx.logger.warn(message) },
+        eitherSidePresets: forwarding.presets,
       })
       sync.remember(defaults()?.currentSelection())
       const onPresetSelected = ctx.on as (event: 'agent-preset/selected', handler: (sessionId: string, preset: string) => void) => () => void

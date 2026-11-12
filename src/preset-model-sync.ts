@@ -30,6 +30,10 @@ export interface PresetModelSyncDeps {
   /** The Claude model a session starts on when none was seen. */
   defaultClaudeModel(): string
   warn(message: string): void
+  /** Presets besides the Claude preset whose Sessions may run on either side.
+   *  Their owner picks the model (dsh-superagent seeds each role's model), so
+   *  a blank Session under one is never moved. */
+  eitherSidePresets?: readonly string[]
 }
 
 export function isClaudeSelection(selection: ModelSelection): boolean {
@@ -50,6 +54,7 @@ export function createPresetModelSync(deps: PresetModelSyncDeps) {
     /** Move the session to its preset's side when it sits on the other one. */
     async sync(sessionId: string, preset: string): Promise<void> {
       if (!deps.isBlank(sessionId)) return
+      if (preset !== CLAUDE_CODE_PRESET_ID && deps.eitherSidePresets?.includes(preset) === true) return
       const current = deps.currentSelection(sessionId)
       remember(current)
       const wantsClaude = preset === CLAUDE_CODE_PRESET_ID

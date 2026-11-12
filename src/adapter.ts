@@ -14,7 +14,8 @@ import type { Agent, AgentRegistry } from '@deepseek-ai/dsh-agent'
 import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ModelInfo, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { injectMnemonContext } from './fleet-tools-mcp.ts'
-import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER, DEFAULT_CLAUDE_RENDER_MODE, type ClaudeRenderMode } from './constants.ts'
+import { CLAUDE_CODE_PROVIDER, DEFAULT_CLAUDE_RENDER_MODE, type ClaudeRenderMode } from './constants.ts'
+import { DEFAULT_CLAUDE_PRESETS, DEFAULT_FORWARDED_SOURCES, isTurnMessage, presetRefusal } from './forwarding.ts'
 import type { ClaudeSupervisor, ClaudeThinkingMode } from './supervisor.ts'
 import type { ClaudeUsage } from './events.ts'
 import { claudeModelRow, ensureClaudeModels } from './model-catalog.ts'
@@ -118,19 +119,17 @@ function imageBlock(data: Uint8Array, mediaType: ImageMediaType): ClaudePromptBl
   }
 }
 
-/** Resolve only the newest direct human message; Claude's session owns history. */
+/** Resolve only the newest message the turn answers: a person's, or a relay
+ *  from an allowed source (see forwarding.ts); Claude's session owns history. */
 export async function resolveDirectUserPrompt(
   messages: GenerateOptions['messages'],
   attachments: AttachmentReader,
   signal?: AbortSignal,
+  sources: readonly string[] = DEFAULT_FORWARDED_SOURCES,
 ): Promise<ClaudePrompt> {
-  const message = [...messages].reverse().find(candidate => (
-    // Request-only user inputs (Host 0.1.7) carry no source and are not the
-    // durable human turn this route answers.
-    candidate.role === 'user' && candidate.source?.kind === 'user'
-  ))
+  const message = [...messages].reverse().find(candidate => isTurnMessage(candidate, sources))
   if (message === undefined) {
-    throw new Error('dsh-claude: no direct human input was present in this model step')
+    throw new Error('dsh-claude: no direct human input or relay was present in this model step')
   }
 
   const imageRefs = message.content
@@ -232,6 +231,15 @@ function auxiliaryText(messages: GenerateOptions['messages']): string {
     .join('\n')
 }
 
+/** Which Sessions this provider serves and which messages reach their turn;
+ *  both default to forwarding.ts and are set through the plugin config. */
+export interface ClaudeForwardingConfig {
+  /** Agent presets whose Sessions may use the `claude` provider. */
+  presets?: readonly string[]
+  /** Message source kinds whose user-role messages reach the Claude turn. */
+  sources?: readonly string[]
+}
+
 function resolveAgent(agents: Pick<AgentRegistry, 'currentInitiator' | 'get'>, options: GenerateOptions): Agent {
   const initiator = agents.currentInitiator()
   if (initiator !== undefined) return initiator
@@ -256,6 +264,8 @@ export class ClaudeCodeAdapter extends LlmAdapter {
   /** Reads the CLI's own `/model` rows, so the selector never has to advertise
    *  the seed vocabulary once the CLI can answer for itself. */
   readonly #probeModels: () => Promise<readonly ModelInfo[]>
+  readonly #presets: readonly string[]
+  readonly #sources: readonly string[]
 
   constructor(
     supervisor: ClaudeSupervisor,
@@ -266,8 +276,11 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     renderMode: () => Promise<ClaudeRenderMode> = async () => DEFAULT_CLAUDE_RENDER_MODE,
     summarizeTitle: (request: SessionTitleRequest) => Promise<string> = request => summarizeSessionTitle('', request),
     probeModels: () => Promise<readonly ModelInfo[]> = async () => [],
+    forwarding: ClaudeForwardingConfig = {},
   ) {
     super()
+    this.#presets = forwarding.presets ?? DEFAULT_CLAUDE_PRESETS
+    this.#sources = forwarding.sources ?? DEFAULT_FORWARDED_SOURCES
     this.#supervisor = supervisor
     this.#agents = agents
     this.#attachments = attachments
@@ -358,13 +371,14 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       throw new Error(`dsh-claude: auxiliary ${options.purpose} calls are not routed into the Claude session`)
     }
     const agent = resolveAgent(this.#agents, options)
-    if (this.#presetIdFor(agent) !== CLAUDE_CODE_PRESET_ID) {
-      throw new Error(`dsh-claude: provider ${CLAUDE_CODE_PROVIDER} is available only to the ${CLAUDE_CODE_PRESET_ID} preset`)
+    const preset = this.#presetIdFor(agent)
+    if (preset === undefined || !this.#presets.includes(preset)) {
+      throw new Error(presetRefusal(CLAUDE_CODE_PROVIDER, this.#presets))
     }
     const thinkingMode = thinkingModeFor(options.reasoningEffort)
     let prompt: ClaudePrompt
     try {
-      prompt = await resolveDirectUserPrompt(options.messages, this.#attachments, options.signal)
+      prompt = await resolveDirectUserPrompt(options.messages, this.#attachments, options.signal, this.#sources)
     } catch (error) {
       if ((error as Error).name !== 'AbortError') throw error
       yield {
@@ -478,6 +492,7 @@ export function createClaudeCodeAdapter(
   renderMode: () => Promise<ClaudeRenderMode> = async () => DEFAULT_CLAUDE_RENDER_MODE,
   summarizeTitle: (request: SessionTitleRequest) => Promise<string> = request => summarizeSessionTitle('', request),
   probeModels: () => Promise<readonly ModelInfo[]> = async () => [],
+  forwarding: ClaudeForwardingConfig = {},
 ): ClaudeCodeAdapter {
-  return new ClaudeCodeAdapter(supervisor, agents, attachments, presetIdFor, drainReviewComments, renderMode, summarizeTitle, probeModels)
+  return new ClaudeCodeAdapter(supervisor, agents, attachments, presetIdFor, drainReviewComments, renderMode, summarizeTitle, probeModels, forwarding)
 }
