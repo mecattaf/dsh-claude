@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { createPresetModelSync, type ModelSelection, type PresetModelSyncDeps } from '../src/preset-model-sync.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createCompositionWatch, createPresetModelSync, type ModelSelection, type PresetModelSyncDeps } from '../src/preset-model-sync.ts'
 
 const deepseek: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-pro' }
 const opus: ModelSelection = { provider: 'claude', model: 'opus' }
@@ -83,5 +83,48 @@ describe('preset model sync', () => {
     const { deps, sync } = harness(opus, { fallbackOtherModel: async () => undefined })
     await sync.sync('s', 'standard')
     expect(deps.selectModel).not.toHaveBeenCalled()
+  })
+})
+
+describe('preset composition watch', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('settles once the composition lands, and gives up after five seconds', () => {
+    vi.useFakeTimers()
+    const watch = createCompositionWatch()
+    let composed: string | undefined
+    const settled = vi.fn()
+    watch.watch(() => composed, settled)
+    vi.advanceTimersByTime(1_000)
+    composed = 'claude'
+    vi.advanceTimersByTime(200)
+    expect(settled).toHaveBeenCalledExactlyOnceWith('claude')
+
+    const never = vi.fn(() => undefined)
+    watch.watch(never, settled)
+    vi.advanceTimersByTime(10_000)
+    expect(never).toHaveBeenCalledTimes(25)
+  })
+
+  it('stops polling after dispose', () => {
+    vi.useFakeTimers()
+    const watch = createCompositionWatch()
+    // The plugin context's injected agentPresets throws once it is inactive.
+    let active = true
+    const composedPreset = vi.fn((): string | undefined => {
+      if (!active) throw new Error('cannot get required service "agentPresets" in inactive context')
+      return undefined
+    })
+    const settled = vi.fn()
+    watch.watch(composedPreset, settled)
+    vi.advanceTimersByTime(1_000)
+    const polls = composedPreset.mock.calls.length
+    watch.dispose()
+    active = false
+    expect(() => vi.advanceTimersByTime(6_000)).not.toThrow()
+    expect(composedPreset).toHaveBeenCalledTimes(polls)
+    expect(settled).not.toHaveBeenCalled()
   })
 })
