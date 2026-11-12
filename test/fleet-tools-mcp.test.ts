@@ -84,6 +84,51 @@ describe('DSH tools MCP bridge', () => {
     expect(await definition!.handler({}, {} as never)).toEqual({ content: [{ type: 'text', text: 'no such trigger' }], isError: true })
   })
 
+  /** A batch executor that keeps each call's signal and answers with the given blocks. */
+  function batchTools(content: readonly { type: string; [field: string]: unknown }[] = [{ type: 'text', text: 'ok' }]) {
+    const signals: AbortSignal[] = []
+    const tools = {
+      schemas: () => [tool('orchestrator_route')],
+      execute: async (input: { calls: { id: string }[]; signal: AbortSignal }) => {
+        signals.push(input.signal)
+        return { results: [{ callId: input.calls[0]!.id, result: { content, isError: false } }], additionalContexts: [], concluded: false }
+      },
+    }
+    return { agent: { ctx: { tools } } as unknown as Agent, signals }
+  }
+
+  it('aborts the DSH call when Claude aborts that one tool call', async () => {
+    const { signal } = lifetime()
+    const { agent, signals } = batchTools()
+    const [definition] = dshToolDefinitions(agent, signal)
+    const call = new AbortController()
+    await definition!.handler({}, { signal: call.signal } as never)
+    expect(signals).toHaveLength(1)
+    expect(signals[0]!.aborted).toBe(false)
+    call.abort()
+    expect(signals[0]!.aborted).toBe(true)
+  })
+
+  it('aborts the DSH call when the Claude session ends', async () => {
+    const { signal, controller } = lifetime()
+    const { agent, signals } = batchTools()
+    const [definition] = dshToolDefinitions(agent, signal)
+    await definition!.handler({}, { signal: new AbortController().signal } as never)
+    expect(signals[0]!.aborted).toBe(false)
+    controller.abort()
+    expect(signals[0]!.aborted).toBe(true)
+  })
+
+  it('fails a result that holds a non-text block explicitly, keeping its text', async () => {
+    const { signal } = lifetime()
+    const { agent } = batchTools([{ type: 'text', text: 'chart below' }, { type: 'image', attachment: 'a1' }])
+    const [definition] = dshToolDefinitions(agent, signal)
+    expect(await definition!.handler({}, {} as never)).toEqual({
+      isError: true,
+      content: [{ type: 'text', text: 'chart below' }, { type: 'text', text: 'This DSH utility bridge supports text results only.' }],
+    })
+  })
+
   it('still runs a call through a single-call (DSH 0.1.7) executor', async () => {
     const { signal } = lifetime()
     const [definition] = dshToolDefinitions(agentWith('mnemon_recall'), signal)
