@@ -56,7 +56,7 @@ import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usag
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
 import { createCompositionWatch, createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
-import { readDefaultPermissionMode, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute, resolvePermissionSelector } from './global-settings.ts'
+import { readDefaultPermissionMode, readRenderMode, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute, resolvePermissionSelector, resolveSupervisorLimits } from './global-settings.ts'
 
 // The steering contract is published for a plugin that wants to reach a running
 // Claude turn itself: the service name to look up, and the shape it can rely on.
@@ -69,7 +69,9 @@ export const inject = ['llm', 'agents', 'agentPresets', 'commands', 'subprocess'
 export interface Config {
   executablePath?: string
   model?: string
+  /** This profile's idle timeout; unset reads the plugin's global setting, then 30 minutes. */
   idleTimeoutMs?: number
+  /** This profile's Claude process limit; unset reads the plugin's global setting, then 4. */
   maxProcesses?: number
   /** Agent presets whose Sessions may use the `claude` provider. */
   presets?: string[]
@@ -84,8 +86,10 @@ export interface Config {
 export const Config: z<Config> = z.object({
   executablePath: z.string().default(''),
   model: z.string().default('default'),
-  idleTimeoutMs: z.number().min(1_000).max(2_147_483_647).default(30 * 60 * 1_000),
-  maxProcesses: z.number().step(1).min(1).default(4),
+  // No default: a limit the profile sets must be told from one it leaves to
+  // the shared Settings file (resolveSupervisorLimits applies the default).
+  idleTimeoutMs: z.number().min(1_000).max(2_147_483_647),
+  maxProcesses: z.number().step(1).min(1),
   presets: z.array(z.string()).default([...DEFAULT_CLAUDE_PRESETS]),
   forwardedSources: z.array(z.string()).default([...DEFAULT_FORWARDED_SOURCES]),
   systemPromptPresets: z.array(z.string()).default([]),
@@ -267,17 +271,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     defaultModel: config.model ?? 'default',
     ...defaultLimits,
   }
-  // Settings overrides win over the plugin config; the supervisor reads the
-  // shared config object on every admission and idle schedule, so updates take
-  // effect without a restart. The renderer is not kept here: the adapter reads
-  // its file at the start of each turn and pins the answer to that turn, so
-  // both halves of a turn -- the records the supervisor stamps and the blocks
-  // the adapter streams -- agree about who is drawing it, and a settings file
-  // edited outside the Settings dialog lands on the next turn all the same.
+  // A limit this profile names in its own config wins over the Settings file,
+  // which every profile under one DSH home shares, as the selector below does;
+  // an unset one takes the file's value, then the built-in default. The
+  // supervisor reads the shared config object on every admission and idle
+  // schedule, so updates take effect without a restart. The renderer is not
+  // kept here: the adapter reads its file at the start of each turn and pins
+  // the answer to that turn, so both halves of a turn -- the records the
+  // supervisor stamps and the blocks the adapter streams -- agree about who is
+  // drawing it, and a settings file edited outside the Settings dialog lands
+  // on the next turn all the same.
   const applySettingsOverrides = async (): Promise<void> => {
-    const overrides = await readSupervisorLimitOverrides()
-    supervisorConfig.idleTimeoutMs = overrides.idleTimeoutMs ?? defaultLimits.idleTimeoutMs
-    supervisorConfig.maxProcesses = overrides.maxProcesses ?? defaultLimits.maxProcesses
+    const limits = await resolveSupervisorLimits(config)
+    supervisorConfig.idleTimeoutMs = limits.idleTimeoutMs
+    supervisorConfig.maxProcesses = limits.maxProcesses
   }
   await applySettingsOverrides()
   // Cached so the projection can put it on the first snapshot line without a
