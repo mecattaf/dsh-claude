@@ -42,7 +42,7 @@ import { registerClaudeClientDiagnosticsRoute } from './client-diagnostics-route
 import { registerClaudeRewindRoute } from './rewind-routes.ts'
 import { registerClaudeBackgroundTaskRoute } from './background-task-routes.ts'
 import { registerClaudePermissionModeRoute } from './permission-mode-routes.ts'
-import { claudePermissionMode, type ClaudePermissionModeView, type ClaudePermissionSelector } from './permission-mode.ts'
+import { CLAUDE_PERMISSION_SELECTORS, claudePermissionMode, type ClaudePermissionModeView, type ClaudePermissionSelector } from './permission-mode.ts'
 import { alignSessionWithDefault, applyHostPreset, type HostPermissionPresetService, type HostPresetAccess } from './permission-mode-host.ts'
 import { restoreWorktreeTree } from './worktree-snapshot.ts'
 import { linkedRepositoryShown, touchedFilePaths, touchedPullRequests, touchedRepositoryRoots, visitedPaths } from './touched-repositories.ts'
@@ -56,7 +56,7 @@ import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usag
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
 import { createCompositionWatch, createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
-import { readDefaultPermissionMode, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute } from './global-settings.ts'
+import { readDefaultPermissionMode, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute, resolvePermissionSelector } from './global-settings.ts'
 
 // The steering contract is published for a plugin that wants to reach a running
 // Claude turn itself: the service name to look up, and the shape it can rely on.
@@ -75,6 +75,10 @@ export interface Config {
   presets?: string[]
   /** Message source kinds whose user-role messages reach the Claude turn. */
   forwardedSources?: string[]
+  /** Agent presets whose DSH-assembled system prompt is appended to Claude Code's own. */
+  systemPromptPresets?: string[]
+  /** This profile's permission selector; empty reads the plugin's global setting. */
+  permissionSelector?: '' | ClaudePermissionSelector
 }
 
 export const Config: z<Config> = z.object({
@@ -84,6 +88,8 @@ export const Config: z<Config> = z.object({
   maxProcesses: z.number().step(1).min(1).default(4),
   presets: z.array(z.string()).default([...DEFAULT_CLAUDE_PRESETS]),
   forwardedSources: z.array(z.string()).default([...DEFAULT_FORWARDED_SOURCES]),
+  systemPromptPresets: z.array(z.string()).default([]),
+  permissionSelector: z.union(['', ...CLAUDE_PERMISSION_SELECTORS]).default(''),
 })
 
 const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (preset route not mounted?)'
@@ -249,10 +255,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     idleTimeoutMs: config.idleTimeoutMs ?? 30 * 60 * 1_000,
     maxProcesses: config.maxProcesses ?? 4,
   }
-  // Which Sessions the provider serves and which messages reach their turn.
+  // Which Sessions the provider serves, which messages reach their turn, and
+  // whose DSH system prompt rides along.
   const forwarding = {
     presets: config.presets ?? [...DEFAULT_CLAUDE_PRESETS],
     sources: config.forwardedSources ?? [...DEFAULT_FORWARDED_SOURCES],
+    systemPromptPresets: config.systemPromptPresets ?? [],
   }
   const supervisorConfig = {
     executablePath: '',
@@ -273,8 +281,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   await applySettingsOverrides()
   // Cached so the projection can put it on the first snapshot line without a
-  // file read; refreshed whenever the Settings panel writes.
-  let permissionSelector: ClaudePermissionSelector = await readPermissionSelector()
+  // file read; refreshed whenever the Settings panel writes. A profile that
+  // sets its own selector keeps it whatever the shared settings file says.
+  const profileSelector = config.permissionSelector ?? ''
+  let permissionSelector: ClaudePermissionSelector = await resolvePermissionSelector(profileSelector)
   const sidecar = new ClaudeSidecarRepository()
   const repositoryStatus = new RepositoryStatusService(subprocess)
   const repositorySetup = new RepositorySetupService(subprocess, {
@@ -581,7 +591,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       defaultLimits,
       onUpdated: async () => {
         await applySettingsOverrides()
-        permissionSelector = await readPermissionSelector()
+        permissionSelector = await resolvePermissionSelector(profileSelector)
         supervisor.limitsChanged()
       },
     })

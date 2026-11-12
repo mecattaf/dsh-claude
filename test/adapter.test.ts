@@ -72,10 +72,10 @@ function supervisorEvents(events: ClaudeTurnStreamEvent[], error?: unknown, cont
 }
 
 function capturingSupervisor(events: ClaudeTurnStreamEvent[] = [{ type: 'complete', text: 'ok' }]) {
-  const calls: Array<{ prompt: unknown; model?: string; thinkingMode?: string; renderMode?: string }> = []
+  const calls: Array<{ prompt: unknown; model?: string; thinkingMode?: string; renderMode?: string; systemAppend?: string }> = []
   const supervisor = {
     contextWindow: () => undefined,
-    runTurn: (request: { prompt: string; model?: string; thinkingMode?: string; renderMode?: string }) => {
+    runTurn: (request: { prompt: string; model?: string; thinkingMode?: string; renderMode?: string; systemAppend?: string }) => {
       calls.push(request)
       return (async function* () {
         for (const event of events) yield event
@@ -795,5 +795,30 @@ describe('claude provider preset allow-list', () => {
   it('follows a configured preset list', async () => {
     await expect(run('dsh-superagent-router', ['claude'])).rejects.toThrow(/available only to the claude preset \(llm-claude\.presets\)/)
     await expect(run('my-preset', ['claude', 'my-preset'])).resolves.toHaveLength(1)
+  })
+})
+
+describe('DSH system prompt append', () => {
+  const policy = '[dsh-superagent prompt revision 3]\nYou are the orchestrator. Route every card with orchestrator_* tools.\n'
+
+  async function systemAppendFor(preset: string, systemPromptPresets?: string[], step: { system?: string } = { system: policy }) {
+    const { supervisor, calls } = capturingSupervisor()
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(), () => preset,
+      undefined, undefined, undefined, undefined, systemPromptPresets === undefined ? {} : { systemPromptPresets })
+    for await (const _chunk of adapter.stream({ ...options(), ...step })) { /* drain */ }
+    expect(calls).toHaveLength(1)
+    return calls[0]!.systemAppend
+  }
+
+  it('appends the DSH system prompt only for configured presets', async () => {
+    await expect(systemAppendFor('dsh-superagent-router', ['dsh-superagent-router'])).resolves.toBe(policy.trim())
+    // An unlisted preset keeps Claude Code's prompt alone, as before.
+    await expect(systemAppendFor('claude', ['dsh-superagent-router'])).resolves.toBeUndefined()
+    await expect(systemAppendFor('dsh-superagent-worker', ['dsh-superagent-router'])).resolves.toBeUndefined()
+    // The default lists no preset.
+    await expect(systemAppendFor('dsh-superagent-router')).resolves.toBeUndefined()
+    // A listed preset with no DSH prompt this step appends nothing.
+    await expect(systemAppendFor('dsh-superagent-router', ['dsh-superagent-router'], {})).resolves.toBeUndefined()
+    await expect(systemAppendFor('dsh-superagent-router', ['dsh-superagent-router'], { system: '  \n' })).resolves.toBeUndefined()
   })
 })

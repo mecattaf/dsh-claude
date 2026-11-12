@@ -1194,6 +1194,53 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('rebuilds the query when the appended system prompt changes', async () => {
+    // The CLI takes the appended prompt only at initialization, so a new
+    // revision needs a fresh process; the bound Claude session keeps context.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const nextTurn = (turn: number) => owner.events.push(
+      { type: 'turn/start', data: { turn }, seq: owner.events.length, time: turn * 2 },
+      { type: 'step/start', data: { turn, step: 1 }, seq: owner.events.length + 1, time: turn * 2 + 1 },
+    )
+    const first = await runtime.runTurn({ agent: owner.agent, prompt: 'one', systemAppend: 'policy revision 1' })
+    const query = transport.queries[0]!
+    expect(query.options.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: `${SYSTEM_PROMPT_APPEND}\n\npolicy revision 1`,
+    })
+    query.push(init())
+    query.push(result('one'))
+    await collect(first)
+
+    nextTurn(2)
+    const same = await runtime.runTurn({ agent: owner.agent, prompt: 'two', systemAppend: 'policy revision 1' })
+    query.push(result('two'))
+    await collect(same)
+    expect(transport.queries).toHaveLength(1)
+
+    nextTurn(3)
+    const changed = await runtime.runTurn({ agent: owner.agent, prompt: 'three', systemAppend: 'policy revision 2' })
+    expect(transport.queries).toHaveLength(2)
+    const next = transport.queries[1]!
+    expect(next.options).toMatchObject({ resume: 'claude-session-1' })
+    expect((next.options.systemPrompt as { append: string }).append).toBe(`${SYSTEM_PROMPT_APPEND}\n\npolicy revision 2`)
+    next.push(init())
+    next.push(result('three'))
+    await collect(changed)
+
+    nextTurn(4)
+    const dropped = await runtime.runTurn({ agent: owner.agent, prompt: 'four' })
+    expect(transport.queries).toHaveLength(3)
+    expect((transport.queries[2]!.options.systemPrompt as { append: string }).append).toBe(SYSTEM_PROMPT_APPEND)
+    transport.queries[2]!.push(init())
+    transport.queries[2]!.push(result('four'))
+    await collect(dropped)
+    await runtime.dispose()
+  })
+
   it('reuses one streaming query for multiple turns', async () => {
     const transport = factory()
     const owner = fakeAgent()

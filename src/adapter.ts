@@ -231,13 +231,20 @@ function auxiliaryText(messages: GenerateOptions['messages']): string {
     .join('\n')
 }
 
-/** Which Sessions this provider serves and which messages reach their turn;
- *  both default to forwarding.ts and are set through the plugin config. */
+/** Which Sessions this provider serves, which messages reach their turn, and
+ *  whose DSH system prompt rides along; set through the plugin config. */
 export interface ClaudeForwardingConfig {
   /** Agent presets whose Sessions may use the `claude` provider. */
   presets?: readonly string[]
   /** Message source kinds whose user-role messages reach the Claude turn. */
   sources?: readonly string[]
+  /** Agent presets whose DSH-assembled system prompt is appended to Claude
+   *  Code's own. Claude Code keeps its system prompt and the turn drops DSH's,
+   *  so a preset that carries its instructions there (dsh-superagent's router
+   *  marks its policy section `complete`) is listed here or its Session never
+   *  reads them. A changed prompt costs a process rebuild, so list only presets
+   *  whose prompt holds still between turns. Default: none. */
+  systemPromptPresets?: readonly string[]
 }
 
 function resolveAgent(agents: Pick<AgentRegistry, 'currentInitiator' | 'get'>, options: GenerateOptions): Agent {
@@ -266,6 +273,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
   readonly #probeModels: () => Promise<readonly ModelInfo[]>
   readonly #presets: readonly string[]
   readonly #sources: readonly string[]
+  readonly #systemPromptPresets: readonly string[]
 
   constructor(
     supervisor: ClaudeSupervisor,
@@ -281,6 +289,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     super()
     this.#presets = forwarding.presets ?? DEFAULT_CLAUDE_PRESETS
     this.#sources = forwarding.sources ?? DEFAULT_FORWARDED_SOURCES
+    this.#systemPromptPresets = forwarding.systemPromptPresets ?? []
     this.#supervisor = supervisor
     this.#agents = agents
     this.#attachments = attachments
@@ -403,6 +412,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     // drawing it, so the turn finished with nothing on screen.
     const renderMode = await this.#renderMode()
     const native = renderMode === 'native'
+    const systemAppend = this.#systemPromptPresets.includes(preset) ? options.system?.trim() : undefined
     const events = await this.#supervisor.runTurn({
       agent,
       prompt: injectReviewComments(
@@ -412,6 +422,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       model: options.model,
       renderMode,
       ...(thinkingMode === undefined ? {} : { thinkingMode }),
+      ...(systemAppend === undefined || systemAppend.length === 0 ? {} : { systemAppend }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     })
     let pendingUsage: TokenUsage | undefined
