@@ -90,6 +90,8 @@ export interface ClaudeSupervisorConfig {
   renderMode?: ClaudeRenderMode
   /** After this long a blocking Bash call is moved to the background; 0 disables it. */
   foregroundBashBackgroundMs?: number
+  /** Name prefixes of the DSH tools bridged into the Claude session; unset: the default prefixes. */
+  bridgedTools?: readonly string[]
 }
 
 export type ClaudeTurnStreamEvent =
@@ -1292,7 +1294,7 @@ export class ClaudeSupervisor {
       pathToClaudeCodeExecutable: this.#config.executablePath,
       // The in-process DSH tool bridge crosses the seam under its own name;
       // only the tools its filter admits reach this session.
-      mcpServers: { dsh: createDshToolsMcpServer(agent, lifetime.signal) },
+      mcpServers: { dsh: createDshToolsMcpServer(agent, lifetime.signal, message => { this.#logger?.warn(message) }, this.#config.bridgedTools) },
       cwd,
       settingSources: ['user', 'project', 'local'],
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(systemAppend) },

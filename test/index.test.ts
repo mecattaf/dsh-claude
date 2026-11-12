@@ -9,6 +9,9 @@ describe('llm-claude Config', () => {
     expect(resolved.systemPromptPresets).toEqual([])
     // Empty: the shared plugin settings file decides, as it did before the key existed.
     expect(resolved.permissionSelector).toBe('')
+    // The bridge admits the prefixes it admitted before the key existed.
+    expect(resolved.bridgedTools).toEqual(['mnemon_', 'jev_', 'orchestrator_'])
+    expect(Config({ bridgedTools: ['notes_'] }).bridgedTools).toEqual(['notes_'])
   })
 
   it('takes the presets whose DSH system prompt is appended', () => {

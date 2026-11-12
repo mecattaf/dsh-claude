@@ -15,11 +15,13 @@ type MnemonContextMessage = {
   source?: { kind?: string; form?: string }
 }
 
-/** Only these DSH utilities cross the seam into the Claude session. Claude owns
- *  its native tools, and the host's shell or plugin manager never cross.
- *  The widened filter admits the `orchestrator_*` tools too: dsh-superagent's
- *  main Session and workers call theirs through this bridge. */
-const DSH_MCP_TOOL_PATTERN = /^(?:mnemon_|jev_|orchestrator_)/u
+/** Only DSH tools whose names start with one of these prefixes cross the seam
+ *  into the Claude session, unless the profile configures
+ *  `llm-claude.bridgedTools`. Claude owns its native tools, and the host's
+ *  shell or plugin manager never cross. The default admits the
+ *  `orchestrator_*` tools too: dsh-superagent's main Session and workers call
+ *  theirs through this bridge. */
+export const DEFAULT_BRIDGED_TOOLS: readonly string[] = ['mnemon_', 'jev_', 'orchestrator_']
 const UNSUPPORTED_CONTENT_TEXT = 'This DSH utility bridge supports text results only.'
 
 /**
@@ -93,15 +95,30 @@ async function executeOne(
  * hold attachment references, not MCP image bytes, so a future provider that
  * returns another content kind fails explicitly.
  */
-export function dshToolDefinitions(agent: Agent, lifetime: AbortSignal): SdkMcpToolDefinition[] {
+export function dshToolDefinitions(
+  agent: Agent,
+  lifetime: AbortSignal,
+  warn: (message: string) => void = () => {},
+  bridged: readonly string[] = DEFAULT_BRIDGED_TOOLS,
+): SdkMcpToolDefinition[] {
   const tools: ToolRuntime = agent.ctx.tools
   return tools.schemas(agent)
-    .filter(({ name }) => DSH_MCP_TOOL_PATTERN.test(name))
-    .map(({ name, description, parameters }) => {
-      const schema = z.fromJSONSchema(parameters) as z.ZodObject<Record<string, z.ZodType>>
-      const shape = schema.shape
-      if (shape === undefined) throw new Error(`DSH MCP tool ${name} requires object arguments`)
-      return tool(name, description, shape, async (args, extra) => {
+    .filter(({ name }) => bridged.some(prefix => name.startsWith(prefix)))
+    .flatMap(({ name, description, parameters }) => {
+      // One tool the bridge cannot represent is left out of this Session,
+      // with a warning, rather than failing every turn of it.
+      let shape: Record<string, z.ZodType> | undefined
+      try {
+        shape = (z.fromJSONSchema(parameters) as z.ZodObject<Record<string, z.ZodType>>).shape
+      } catch (error) {
+        warn(`dsh-claude: DSH tool ${name} is not bridged: its parameters are not a schema the bridge reads (${error instanceof Error ? error.message : String(error)})`)
+        return []
+      }
+      if (shape === undefined) {
+        warn(`dsh-claude: DSH tool ${name} is not bridged: an MCP tool takes object arguments`)
+        return []
+      }
+      return [tool(name, description, shape, async (args, extra) => {
         const signals: AbortSignal[] = [lifetime]
         const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal
         if (extraSignal !== undefined) signals.push(extraSignal)
@@ -126,14 +143,19 @@ export function dshToolDefinitions(agent: Agent, lifetime: AbortSignal): SdkMcpT
           content: content.map(block => ({ type: 'text', text: block.text })),
           ...(result.isError ? { isError: true } : {}),
         }
-      })
+      })]
     })
 }
 
-export function createDshToolsMcpServer(agent: Agent, lifetime: AbortSignal) {
+export function createDshToolsMcpServer(
+  agent: Agent,
+  lifetime: AbortSignal,
+  warn?: (message: string) => void,
+  bridged?: readonly string[],
+) {
   return createSdkMcpServer({
     name: 'dsh',
     version: '1.0.0',
-    tools: dshToolDefinitions(agent, lifetime),
+    tools: dshToolDefinitions(agent, lifetime, warn, bridged),
   })
 }
