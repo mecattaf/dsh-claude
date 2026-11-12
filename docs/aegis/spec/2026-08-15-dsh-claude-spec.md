@@ -37,6 +37,7 @@ Ship an out-of-tree DSH bundle named `dsh-claude` that adds a `Claude Code CLI` 
 - Reuse the user's existing Claude authentication and `~/.claude` configuration.
 - Do not store or return Claude credentials.
 - Do not expose DSH tools to Claude as a second agent loop.
+  A profile's `dshTools` list is not one: the DSH tools it names are offered to Claude Code's own loop as `mcp__dsh__<name>` MCP tools, each call runs through the Agent's DSH tool executor, and the bridge records no DSH tool events. Nothing crosses unless a profile lists it.
 - Do not represent Claude-owned tool calls as DSH-owned tool execution.
 - Do not automatically replay a prompt whose side-effect outcome is unknown.
 - macOS was the initial validation platform. Current code also includes Windows executable and runner compatibility; platform-specific verification must be recorded separately.
