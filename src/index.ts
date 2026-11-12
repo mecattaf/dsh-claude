@@ -56,6 +56,7 @@ import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usag
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
 import { createCompositionWatch, createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
+import { DEFAULT_BRIDGED_TOOLS } from './fleet-tools-mcp.ts'
 import { readDefaultPermissionMode, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute, resolvePermissionSelector } from './global-settings.ts'
 
 // The steering contract is published for a plugin that wants to reach a running
@@ -79,6 +80,8 @@ export interface Config {
   systemPromptPresets?: string[]
   /** This profile's permission selector; empty reads the plugin's global setting. */
   permissionSelector?: '' | ClaudePermissionSelector
+  /** Name prefixes of the DSH tools that cross into the Claude session as MCP tools. */
+  bridgedTools?: string[]
 }
 
 export const Config: z<Config> = z.object({
@@ -90,6 +93,7 @@ export const Config: z<Config> = z.object({
   forwardedSources: z.array(z.string()).default([...DEFAULT_FORWARDED_SOURCES]),
   systemPromptPresets: z.array(z.string()).default([]),
   permissionSelector: z.union(['', ...CLAUDE_PERMISSION_SELECTORS]).default(''),
+  bridgedTools: z.array(z.string()).default([...DEFAULT_BRIDGED_TOOLS]),
 })
 
 const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (preset route not mounted?)'
@@ -265,6 +269,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const supervisorConfig = {
     executablePath: '',
     defaultModel: config.model ?? 'default',
+    bridgedTools: config.bridgedTools ?? [...DEFAULT_BRIDGED_TOOLS],
     ...defaultLimits,
   }
   // Settings overrides win over the plugin config; the supervisor reads the

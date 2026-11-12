@@ -31,6 +31,12 @@ describe('DSH tools MCP bridge', () => {
     expect(definitions.map(({ name }) => name)).toEqual(['orchestrator_route', 'mnemon_recall', 'jev_x'])
   })
 
+  it('crosses only the tools of the configured prefixes', () => {
+    const { signal } = lifetime()
+    const definitions = dshToolDefinitions(agentWith('orchestrator_route', 'mnemon_recall', 'notes_find'), signal, undefined, ['notes_'])
+    expect(definitions.map(({ name }) => name)).toEqual(['notes_find'])
+  })
+
   it('keeps the host-owned shell tool behind the seam', () => {
     const { signal } = lifetime()
     const definitions = dshToolDefinitions(agentWith('mnemon_recall', 'host_shell'), signal)

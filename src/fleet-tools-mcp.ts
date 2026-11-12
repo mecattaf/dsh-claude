@@ -15,11 +15,13 @@ type MnemonContextMessage = {
   source?: { kind?: string; form?: string }
 }
 
-/** Only these DSH utilities cross the seam into the Claude session. Claude owns
- *  its native tools, and the host's shell, plugin manager or Herdr never cross.
- *  The widened filter admits the `orchestrator_*` tools too: dsh-superagent's
- *  main Session and workers call theirs through this bridge. */
-const DSH_MCP_TOOL_PATTERN = /^(?:mnemon_|jev_|orchestrator_)/u
+/** Only DSH tools whose names start with one of these prefixes cross the seam
+ *  into the Claude session, unless the profile configures
+ *  `llm-claude.bridgedTools`. Claude owns its native tools, and the host's
+ *  shell, plugin manager or Herdr never cross. The default admits the
+ *  `orchestrator_*` tools too: dsh-superagent's main Session and workers call
+ *  theirs through this bridge. */
+export const DEFAULT_BRIDGED_TOOLS: readonly string[] = ['mnemon_', 'jev_', 'orchestrator_']
 const UNSUPPORTED_CONTENT_TEXT = 'This DSH utility bridge supports text results only.'
 
 /**
@@ -97,10 +99,11 @@ export function dshToolDefinitions(
   agent: Agent,
   lifetime: AbortSignal,
   warn: (message: string) => void = () => {},
+  bridged: readonly string[] = DEFAULT_BRIDGED_TOOLS,
 ): SdkMcpToolDefinition[] {
   const tools: ToolRuntime = agent.ctx.tools
   return tools.schemas(agent)
-    .filter(({ name }) => DSH_MCP_TOOL_PATTERN.test(name))
+    .filter(({ name }) => bridged.some(prefix => name.startsWith(prefix)))
     .flatMap(({ name, description, parameters }) => {
       // One tool the bridge cannot represent is left out of this Session,
       // with a warning, rather than failing every turn of it.
@@ -144,10 +147,15 @@ export function dshToolDefinitions(
     })
 }
 
-export function createDshToolsMcpServer(agent: Agent, lifetime: AbortSignal, warn?: (message: string) => void) {
+export function createDshToolsMcpServer(
+  agent: Agent,
+  lifetime: AbortSignal,
+  warn?: (message: string) => void,
+  bridged?: readonly string[],
+) {
   return createSdkMcpServer({
     name: 'dsh',
     version: '1.0.0',
-    tools: dshToolDefinitions(agent, lifetime, warn),
+    tools: dshToolDefinitions(agent, lifetime, warn, bridged),
   })
 }
