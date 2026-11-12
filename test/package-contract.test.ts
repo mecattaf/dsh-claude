@@ -55,16 +55,19 @@ describe('published package contract', () => {
     }
     expect(packageJson.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.1.7-rc.2')
     expect(dshDevelopmentVersions.length).toBeGreaterThan(0)
-    // Desktop 2.0.15 uses 0.1.7-rc.2, and every development package is on it.
-    expect(new Set(dshDevelopmentVersions)).toEqual(new Set(['0.1.7-rc.2']))
-    expect(workspace).toContain("'@deepseek-ai/dsh-*': 0.1.7-rc.2")
+    // The suite runs on the newest Host line the floor admits, as one
+    // version: DSH 0.2 Hosts ship 0.2.2-rc.1, and every development package
+    // is on it.
+    expect(new Set(dshDevelopmentVersions)).toEqual(new Set(['0.2.2-rc.1']))
+    expect(workspace).toContain("'@deepseek-ai/dsh-*': 0.2.2-rc.1")
     expect(host).toContain("'attachments'")
     expect(host).toContain('ctx.attachments')
   })
 
   it('documents the DSH package line the plugin is actually built on', async () => {
     const readme = await readFile(join(root, 'README.md'), 'utf8')
-    expect(readme).toContain('developed against the DSH `0.1.7-rc.2` package line')
+    expect(readme).toContain('developed against the DSH `0.2.2-rc.1` package line')
+    expect(readme).toContain('requires at least `0.1.7-rc.2`')
     expect(readme).not.toContain('developed against the DSH `0.1.5-rc.2` package line')
     expect(readme).toContain('0.1.36')
     expect(readme).toContain('0.1.57')
