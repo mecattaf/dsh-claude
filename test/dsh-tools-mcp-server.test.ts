@@ -94,20 +94,26 @@ describe('DSH tools MCP server on the host tool runtime', () => {
     expect(listed.error).toBeUndefined()
     const tools = listed.result?.tools as { name: string; inputSchema: Record<string, unknown> }[]
     expect(tools.map(({ name }) => name)).toEqual(['orchestrator_read'])
-    // The MCP server re-derives `limit` from the zod shape as a plain number
-    // (no `integer`, no bounds); the registry's projection itself keeps them.
+    // Listed as the registry projects it, constraints included: the SDK's own
+    // listing, re-derived from zod, would show `limit` as a plain number
+    // without its bounds and refuse no unknown key.
     expect(tools[0]!.inputSchema).toMatchObject({
       type: 'object',
       properties: {
         resource: { type: 'string', enum: ['triggers', 'tickets'] },
-        limit: { type: expect.stringMatching(/^(?:integer|number)$/u) },
+        limit: { type: 'integer', minimum: 1 },
       },
       required: ['resource'],
+      additionalProperties: false,
     })
 
     const called = await request('tools/call', { name: 'orchestrator_read', arguments: { resource: 'tickets', limit: 2 } })
     expect(called.error).toBeUndefined()
     expect(called.result).toEqual({ content: [{ type: 'text', text: '{"read":"tickets","limit":2}' }] })
     expect(ran).toEqual([{ resource: 'tickets', limit: 2 }])
+
+    const misspelt = await request('tools/call', { name: 'orchestrator_read', arguments: { resource: 'tickets', limt: 2 } })
+    expect(JSON.stringify(misspelt)).toContain('limt')
+    expect(ran).toHaveLength(1)
   })
 })

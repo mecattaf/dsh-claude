@@ -3,7 +3,7 @@ import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-
 import { z } from 'zod'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
-import type { ContentBlock, TextBlock, ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, TextBlock, ToolCallId, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 
 /** One Claude turn's outgoing prompt: a bare string or its ordered content blocks. */
@@ -22,7 +22,8 @@ type MnemonContextMessage = {
  *  `orchestrator_*` tools too: dsh-superagent's main Session and workers call
  *  theirs through this bridge. */
 export const DEFAULT_BRIDGED_TOOLS: readonly string[] = ['mnemon_', 'jev_', 'orchestrator_']
-const UNSUPPORTED_CONTENT_TEXT = 'This DSH utility bridge supports text results only.'
+const UNSUPPORTED_CONTENT_TEXT = 'This DSH utility bridge carries text results only, so the non-text blocks of this result, '
+  + 'such as an image, were left out. Work from the text above, or leave what needs them to a person.'
 
 /**
  * Prepend the session's current Mnemon context to the outgoing user prompt.
@@ -121,6 +122,11 @@ async function executeOne(
   return own.result
 }
 
+/** One bridged tool: its SDK definition and the DSH `parameters` it is listed with. */
+type BridgedTool = { definition: SdkMcpToolDefinition; parameters: ToolSchema['parameters'] }
+
+const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
+
 /**
  * The DSH utilities the Claude session may call, as MCP tool definitions.
  *
@@ -128,6 +134,14 @@ async function executeOne(
  * pre/guard/post policies. These utilities render text today; DSH image blocks
  * hold attachment references, not MCP image bytes, so a future provider that
  * returns another content kind fails explicitly.
+ *
+ * Each call is validated by the whole object schema rebuilt from the tool's
+ * `parameters`, not by its shape alone: a shape is wrapped in a non-strict
+ * object, which would strip an unknown or misspelt key (an idempotency key
+ * such as `trigger_id` among them) before DSH sees the call. A tool whose
+ * parameters cannot be rebuilt is left out with a warning, and so is the
+ * whole list when the registry cannot project it, so one bad tool never
+ * fails the turn.
  */
 export function dshToolDefinitions(
   agent: Agent,
@@ -135,61 +149,125 @@ export function dshToolDefinitions(
   warn: (message: string) => void = () => {},
   bridged: readonly string[] = DEFAULT_BRIDGED_TOOLS,
 ): SdkMcpToolDefinition[] {
+  return bridgedTools(agent, lifetime, warn, bridged).map(({ definition }) => definition)
+}
+
+function bridgedTools(
+  agent: Agent,
+  lifetime: AbortSignal,
+  warn: (message: string) => void,
+  bridged: readonly string[],
+): BridgedTool[] {
   const tools: ToolRuntime = agent.ctx.tools
-  return tools.schemas(agent)
-    .filter(({ name }) => bridged.some(prefix => name.startsWith(prefix)))
-    .flatMap(({ name, description, parameters }) => {
-      // One tool the bridge cannot represent is left out of this Session,
-      // with a warning, rather than failing every turn of it.
-      let shape: Record<string, z.ZodType> | undefined
-      try {
-        shape = (z.fromJSONSchema(parameters) as z.ZodObject<Record<string, z.ZodType>>).shape
-      } catch (error) {
-        warn(`dsh-claude: DSH tool ${name} is not bridged: its parameters are not a schema the bridge reads (${error instanceof Error ? error.message : String(error)})`)
-        return []
-      }
-      if (shape === undefined) {
-        warn(`dsh-claude: DSH tool ${name} is not bridged: an MCP tool takes object arguments`)
-        return []
-      }
-      return [tool(name, description, shape, async (args, extra) => {
-        const signals: AbortSignal[] = [lifetime]
-        const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal
-        if (extraSignal !== undefined) signals.push(extraSignal)
-        const result = await executeOne(tools, {
-          callId: randomUUID() as ToolCallId,
-          name,
-          arguments: args,
-          agent,
-          signal: AbortSignal.any(signals),
-        })
-        const content = result.content.filter((block): block is TextBlock => block.type === 'text')
-        if (content.length !== result.content.length) {
-          return {
-            isError: true,
-            content: [
-              ...content.map(block => ({ type: 'text' as const, text: block.text })),
-              { type: 'text', text: UNSUPPORTED_CONTENT_TEXT },
-            ],
-          }
-        }
-        return {
-          content: content.map(block => ({ type: 'text', text: block.text })),
-          ...(result.isError ? { isError: true } : {}),
-        }
-      })]
+  let schemas: readonly ToolSchema[]
+  try {
+    schemas = tools.schemas(agent)
+  } catch (error) {
+    warn(`dsh-claude: the DSH tools could not be listed, so this Claude query gets none of them: ${errorText(error)}`)
+    return []
+  }
+  const out: BridgedTool[] = []
+  for (const { name, description, parameters } of schemas) {
+    if (!bridged.some(prefix => name.startsWith(prefix))) continue
+    // One tool the bridge cannot represent is left out of this Session,
+    // with a warning, rather than failing every turn of it.
+    try {
+      out.push({ definition: bridgeTool(tools, agent, lifetime, name, description, parameters), parameters })
+    } catch (error) {
+      warn(`dsh-claude: DSH tool ${name} is not bridged: ${errorText(error)}`)
+    }
+  }
+  return out
+}
+
+function bridgeTool(
+  tools: ToolRuntime,
+  agent: Agent,
+  lifetime: AbortSignal,
+  name: string,
+  description: string,
+  parameters: ToolSchema['parameters'],
+): SdkMcpToolDefinition {
+  let schema: z.ZodObject<Record<string, z.ZodType>>
+  try {
+    schema = z.fromJSONSchema(parameters) as z.ZodObject<Record<string, z.ZodType>>
+  } catch (error) {
+    throw new Error(`its parameters are not a schema the bridge reads (${errorText(error)})`)
+  }
+  if (schema.shape === undefined) throw new Error('an MCP tool takes object arguments')
+  // The SDK types a raw shape here; its MCP server takes a whole object schema too, and keeps its strictness.
+  return tool(name, description, schema as unknown as Record<string, z.ZodType>, async (args, extra) => {
+    const signals: AbortSignal[] = [lifetime]
+    const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal
+    if (extraSignal !== undefined) signals.push(extraSignal)
+    const result = await executeOne(tools, {
+      callId: randomUUID() as ToolCallId,
+      name,
+      arguments: args,
+      agent,
+      signal: AbortSignal.any(signals),
     })
+    const content = result.content.filter((block): block is TextBlock => block.type === 'text')
+    if (content.length !== result.content.length) {
+      return {
+        isError: true,
+        content: [
+          ...content.map(block => ({ type: 'text' as const, text: block.text })),
+          { type: 'text', text: UNSUPPORTED_CONTENT_TEXT },
+        ],
+      }
+    }
+    return {
+      content: content.map(block => ({ type: 'text', text: block.text })),
+      ...(result.isError ? { isError: true } : {}),
+    }
+  }) as SdkMcpToolDefinition
+}
+
+/**
+ * List each bridged tool with its DSH `parameters` verbatim as the `inputSchema`.
+ *
+ * The SDK lists a tool from its zod schema, which keeps descriptions of top-level
+ * fields only and drops every constraint (lengths, patterns, integers, bounds,
+ * item counts), so the model would be shown a weaker contract than DSH enforces
+ * and learn each rule from a refused call. The zod schema still validates every
+ * call. Only the listing the SDK's own server installs is wrapped; without it,
+ * the SDK's listing stays as it is. The top-level `$schema` dialect marker is
+ * left out: the SDK's own listing names draft-07 and DSH's names 2020-12, and
+ * the keywords DSH's tools use read the same under both.
+ */
+function listVerbatim(instance: unknown, parameters: ReadonlyMap<string, ToolSchema['parameters']>): void {
+  const handlers = (instance as { server?: { _requestHandlers?: unknown } } | undefined)?.server?._requestHandlers
+  if (!(handlers instanceof Map)) return
+  const list: unknown = handlers.get('tools/list')
+  if (typeof list !== 'function') return
+  handlers.set('tools/list', async (request: unknown, extra: unknown) => {
+    const listed = await (list as (request: unknown, extra: unknown) => Promise<{ tools?: { name: string }[] }>)(request, extra)
+    if (!Array.isArray(listed.tools)) return listed
+    return {
+      ...listed,
+      tools: listed.tools.map(entry => {
+        const own = parameters.get(entry.name)
+        if (own === undefined || (own as { type?: unknown }).type !== 'object') return entry
+        const { $schema: _dialect, ...inputSchema } = own as Record<string, unknown>
+        return { ...entry, inputSchema }
+      }),
+    }
+  })
 }
 
 export function createDshToolsMcpServer(
   agent: Agent,
   lifetime: AbortSignal,
-  warn?: (message: string) => void,
-  bridged?: readonly string[],
+  warn: (message: string) => void = () => {},
+  bridged: readonly string[] = DEFAULT_BRIDGED_TOOLS,
 ) {
-  return createSdkMcpServer({
+  const tools = bridgedTools(agent, lifetime, warn, bridged)
+  const server = createSdkMcpServer({
     name: 'dsh',
     version: '1.0.0',
-    tools: dshToolDefinitions(agent, lifetime, warn, bridged),
+    tools: tools.map(({ definition }) => definition),
   })
+  listVerbatim(server.instance, new Map(tools.map(({ definition, parameters }) => [definition.name, parameters])))
+  return server
 }
