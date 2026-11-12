@@ -75,6 +75,8 @@ export interface Config {
   presets?: string[]
   /** Message source kinds whose user-role messages reach the Claude turn. */
   forwardedSources?: string[]
+  /** Agent presets whose DSH-assembled system prompt is appended to Claude Code's own. */
+  systemPromptPresets?: string[]
   /** This profile's permission selector; empty reads the plugin's global setting. */
   permissionSelector?: '' | ClaudePermissionSelector
 }
@@ -86,6 +88,7 @@ export const Config: z<Config> = z.object({
   maxProcesses: z.number().step(1).min(1).default(4),
   presets: z.array(z.string()).default([...DEFAULT_CLAUDE_PRESETS]),
   forwardedSources: z.array(z.string()).default([...DEFAULT_FORWARDED_SOURCES]),
+  systemPromptPresets: z.array(z.string()).default([]),
   permissionSelector: z.union(['', ...CLAUDE_PERMISSION_SELECTORS]).default(''),
 })
 
@@ -252,10 +255,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     idleTimeoutMs: config.idleTimeoutMs ?? 30 * 60 * 1_000,
     maxProcesses: config.maxProcesses ?? 4,
   }
-  // Which Sessions the provider serves and which messages reach their turn.
+  // Which Sessions the provider serves, which messages reach their turn, and
+  // whose DSH system prompt rides along.
   const forwarding = {
     presets: config.presets ?? [...DEFAULT_CLAUDE_PRESETS],
     sources: config.forwardedSources ?? [...DEFAULT_FORWARDED_SOURCES],
+    systemPromptPresets: config.systemPromptPresets ?? [],
   }
   const supervisorConfig = {
     executablePath: '',

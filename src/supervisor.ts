@@ -146,6 +146,12 @@ export const FILE_LINK_PROMPT =
 
 export const SYSTEM_PROMPT_APPEND = `${PLAN_MODE_HANDOFF_PROMPT}\n\n${FILE_LINK_PROMPT}`
 
+/** What a process appends to Claude Code's own system prompt: this plugin's
+ *  rules, then the DSH-assembled prompt a turn asked to carry, if any. */
+export function systemPromptAppend(systemAppend: string | undefined): string {
+  return systemAppend === undefined ? SYSTEM_PROMPT_APPEND : `${SYSTEM_PROMPT_APPEND}\n\n${systemAppend}`
+}
+
 /** The live equivalent of a thinking mode, or undefined when the mode is a
  *  start-time shape the CLI will not take later: `off` disables thinking through
  *  a query option, `ultracode` is a settings bundle, and "no explicit mode" is
@@ -175,6 +181,10 @@ export interface ClaudeTurnRequest {
    *  which froze its own answer at turn start, streamed nothing natively.
    *  Omitted falls back to the shared config. */
   renderMode?: ClaudeRenderMode
+  /** The DSH-assembled system prompt this turn's Session carries, appended
+   *  after this plugin's own rules. A process is started with one, so a turn
+   *  that brings a different one rebuilds it; omitted means none. */
+  systemAppend?: string
   signal?: AbortSignal
 }
 
@@ -273,6 +283,8 @@ interface SupervisorEntry {
   cwd: string
   model: string
   thinkingMode: ClaudeThinkingMode | undefined
+  /** The DSH system prompt this process was started with; see ClaudeTurnRequest. */
+  systemAppend: string | undefined
   permissionMode: PermissionMode
   state: ClaudeSupervisorState
   lastUsedAt: number
@@ -785,6 +797,7 @@ export class ClaudeSupervisor {
           request.thinkingMode,
           abortDuringAdmission ? request.signal : undefined,
           cancellationSignal,
+          request.systemAppend,
         )
       } catch (error) {
         await throwIfUnavailable()
@@ -822,14 +835,17 @@ export class ClaudeSupervisor {
     // the context-window probe issues after a process's first turn, so a switched session
     // answers as the old model. Those rebuild the query; the persisted Claude
     // session binding keeps the context.
-    // A changed model rebuilds the process regardless, so the control request
-    // would be spent on a process that is about to be torn down.
-    const switchedLive = mode !== entry.thinkingMode && mode !== undefined && effort !== undefined && model === entry.model
+    // The appended system prompt is one of those start-time shapes: the CLI
+    // takes it only at initialization. A changed model or appended prompt
+    // rebuilds the process regardless, so the control request would be spent
+    // on a process that is about to be torn down.
+    const rebuilds = model !== entry.model || request.systemAppend !== entry.systemAppend
+    const switchedLive = mode !== entry.thinkingMode && mode !== undefined && effort !== undefined && !rebuilds
       ? await this.#switchEffort(entry, mode, effort)
       : false
-    if (model !== entry.model || (mode !== entry.thinkingMode && !switchedLive)) {
+    if (rebuilds || (mode !== entry.thinkingMode && !switchedLive)) {
       this.#entries.delete(sessionId)
-      await this.#disposeEntry(entry, 'model or effort switch')
+      await this.#disposeEntry(entry, request.systemAppend === entry.systemAppend ? 'model or effort switch' : 'system prompt switch')
       if (createdForRequest === entry) createdForRequest = undefined
       await throwIfUnavailable()
       try {
@@ -839,6 +855,7 @@ export class ClaudeSupervisor {
           request.thinkingMode,
           abortDuringAdmission ? request.signal : undefined,
           cancellationSignal,
+          request.systemAppend,
         )
       } catch (error) {
         await throwIfUnavailable()
@@ -1212,6 +1229,7 @@ export class ClaudeSupervisor {
     thinkingMode?: ClaudeThinkingMode,
     signal?: AbortSignal,
     cancellationSignal?: AbortSignal,
+    systemAppend?: string,
   ): Promise<SupervisorEntry> {
     const sessionId = agent.id as string
     const cwd = agent.session.header.cwd ?? process.cwd()
@@ -1234,6 +1252,7 @@ export class ClaudeSupervisor {
       cwd,
       model,
       thinkingMode,
+      systemAppend,
       permissionMode,
       state: 'starting' as ClaudeSupervisorState,
       lastUsedAt: Date.now(),
@@ -1276,7 +1295,7 @@ export class ClaudeSupervisor {
       mcpServers: { dsh: createDshToolsMcpServer(agent, lifetime.signal) },
       cwd,
       settingSources: ['user', 'project', 'local'],
-      systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_PROMPT_APPEND },
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(systemAppend) },
       tools: { type: 'preset', preset: 'claude_code' },
       includePartialMessages: true,
       // The Host job list renders a per-task stop control (see host-jobs.ts).
