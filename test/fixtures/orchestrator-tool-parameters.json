@@ -1,0 +1,752 @@
+{
+ "orchestrator_read": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "resource": {
+    "type": "string",
+    "minLength": 1,
+    "description": "The resource, one of: thread/<key>: one thread: its label and link, its tickets and latest decisions, and its triggers, newest first; ticket/<id>: a ticket's card, the trigger, decision and threads it is tied to, its latest assignments with the start of each report, and its inputs, newest first; ticket/<id>/assignment: its assignment text; ticket/<id>/assignments: its assignments, newest first, with the start of each report; ticket/<id>/inputs: its inputs, newest first; ticket/<id>/result: its latest report; ticket/<id>/report/<id>: the report of one of its assignments; ticket/<id>/transcript: its Executor Session's messages, newest first; ticket/<id>/message/<n>: one message of that transcript; ticket/<id>/input/<id>: one input it was delivered; trigger/<id>: a trigger's text, where it went, the message it replies to and the messages around it on its thread; prompts/<revision>: one prompt version by number, or current, the one the Session works under; feishu/<trigger-id>/…: a Feishu original, as the dsh-superagent-feishu skill describes; github/…: a GitHub original, as the dsh-superagent-github skill describes."
+   },
+   "offset": {
+    "default": 0,
+    "description": "Copy next_offset from the previous page; it counts characters of a text and items of a list.",
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 9007199254740991
+   },
+   "limit": {
+    "description": "Characters of a text, 4000 by default and 8000 at most, or items of a list, 20 by default and 50 at most.",
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 8000
+   }
+  },
+  "required": [
+   "resource",
+   "offset"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_route": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "decisions": {
+    "minItems": 1,
+    "maxItems": 20,
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "kind": {
+       "type": "string",
+       "enum": [
+        "accept",
+        "attach",
+        "ignore",
+        "stop"
+       ]
+      },
+      "trigger_id": {
+       "type": "string",
+       "description": "The candidate card's trigger_id; deciding it decides its batch."
+      },
+      "ticket_id": {
+       "description": "attach and stop: the ticket.",
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "title": {
+       "description": "accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.",
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "worktree_name": {
+       "description": "accept: Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.",
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "acknowledgement": {
+       "description": "accept: one brief sentence of at most 100 words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.",
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "note": {
+       "description": "accept and attach: Optional routing background or explicit human constraint, at most 30 words. Never add implementation instructions or replace the original source.",
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "reason": {
+       "description": "ignore and stop: why, at most 500 characters; an ignore needs it.",
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "required": [
+      "kind",
+      "trigger_id"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  "required": [
+   "decisions"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_ticket_retry": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "ticket_id": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "ticket_id"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_ticket_request_status": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "ticket_id": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "ticket_id"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_ticket_note": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "ticket_id": {
+    "type": "string"
+   },
+   "text": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "required": [
+   "ticket_id",
+   "text"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_trigger_requeue": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "trigger_id": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "trigger_id"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_eval": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "trigger_id": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "trigger_id"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_eval_read": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "trigger_id": {
+    "type": "string",
+    "minLength": 1,
+    "description": "Original candidate ID returned by orchestrator_eval; every reference is scoped to this trigger."
+   },
+   "resource": {
+    "type": "string",
+    "enum": [
+     "message",
+     "root",
+     "parent",
+     "thread",
+     "file",
+     "directory",
+     "image"
+    ]
+   },
+   "path": {
+    "description": "Repository-relative path, only for file/directory.",
+    "type": "string"
+   },
+   "message_id": {
+    "description": "Only for message: omit for the trigger, or the id of a window message or stub.",
+    "type": "string"
+   },
+   "cursor": {
+    "description": "Only for thread: omit on the first page, then the next_cursor of the window or the cursor of next_read. Never a thread or message ID.",
+    "type": "string"
+   },
+   "image_id": {
+    "description": "Only for image: an image id the window or a read lists.",
+    "type": "string"
+   },
+   "offset": {
+    "default": 0,
+    "description": "Text pagination: copy next_offset; keep the other arguments unchanged. Images use 0.",
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 9007199254740991
+   }
+  },
+  "required": [
+   "trigger_id",
+   "resource",
+   "offset"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_eval_decide": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "trigger_id": {
+    "type": "string",
+    "minLength": 1
+   },
+   "decision": {
+    "type": "string",
+    "enum": [
+     "accept",
+     "ignore",
+     "unavailable"
+    ]
+   },
+   "rule_assessments": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "rule_id": {
+       "type": "string",
+       "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+      },
+      "reason": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 500
+      },
+      "matched": {
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "rule_id",
+      "reason",
+      "matched"
+     ],
+     "additionalProperties": false
+    },
+    "description": "One per enabled rule."
+   },
+   "direction": {
+    "type": "object",
+    "properties": {
+     "implementation_requested": {
+      "type": "boolean"
+     },
+     "target_basis": {
+      "type": "string",
+      "enum": [
+       "specified",
+       "existing-standard",
+       "undetermined"
+      ]
+     },
+     "requires_design_decision": {
+      "type": "boolean"
+     },
+     "evidence": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 700
+     }
+    },
+    "required": [
+     "implementation_requested",
+     "target_basis",
+     "requires_design_decision",
+     "evidence"
+    ],
+    "additionalProperties": false,
+    "description": "Required for every decision."
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 160
+   },
+   "worktree_name": {
+    "type": "string",
+    "maxLength": 32,
+    "pattern": "^[a-z]+(?:-[a-z0-9]+){0,3}$",
+    "description": "Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters."
+   },
+   "scope": {
+    "type": "string",
+    "maxLength": 1500
+   },
+   "intent_evidence": {
+    "description": "For acceptance: the quotes that establish the three facts.",
+    "anyOf": [
+     {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 700
+     },
+     {
+      "type": "null"
+     }
+    ]
+   },
+   "acknowledgement": {
+    "description": "For acceptance: one sentence in the source language, posted as a reply to the trigger; omit only when a matched rule asks for silence.",
+    "anyOf": [
+     {
+      "type": "string",
+      "minLength": 1
+     },
+     {
+      "type": "null"
+     }
+    ]
+   },
+   "reason": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 500
+   }
+  },
+  "required": [
+   "trigger_id",
+   "decision",
+   "rule_assessments",
+   "direction",
+   "title",
+   "scope",
+   "reason"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_reply": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "trigger_id": {
+    "description": "The original human question, for an answer only.",
+    "type": "string"
+   },
+   "ticket_id": {
+    "type": "string"
+   },
+   "purpose": {
+    "type": "string",
+    "enum": [
+     "answer",
+     "result",
+     "attention"
+    ]
+   },
+   "human_action": {
+    "description": "Required for attention: the ticket's current attention question.",
+    "type": "string",
+    "minLength": 1
+   },
+   "text": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 20000
+   }
+  },
+  "required": [
+   "purpose",
+   "text"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_thread_unsubscribe": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "thread": {
+    "type": "string",
+    "description": "Thread key, for example github:123 or feishu:<chat>:<root message>"
+   }
+  },
+  "required": [
+   "thread"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_settings_save": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "block": {
+    "type": "string",
+    "enum": [
+     "policy",
+     "eval",
+     "executor",
+     "pause",
+     "source"
+    ],
+    "description": "pause pauses or resumes processing: new Evals, dispatch and replies."
+   },
+   "source": {
+    "description": "With block source: the Source instance id, such as github or feishu.",
+    "type": "string",
+    "minLength": 1
+   },
+   "value": {
+    "description": "The whole block; a Source takes { enabled, config }, pause takes { paused }."
+   },
+   "revision": {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 9007199254740991,
+    "description": "The block's revision; pause ignores it."
+   }
+  },
+  "required": [
+   "block",
+   "value",
+   "revision"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_policy_sync": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "source": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "source"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_prompts_save": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "config": {
+    "type": "object",
+    "properties": {
+     "communication": {
+      "type": "string"
+     },
+     "scope": {
+      "type": "string"
+     },
+     "delivery": {
+      "type": "string"
+     },
+     "skills": {
+      "type": "object",
+      "propertyNames": {
+       "type": "string",
+       "pattern": "^[a-z][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "overrides": {
+      "description": "Text in place of a built-in part, by its key in prompts/defaults; a part not named follows its built-in text.",
+      "type": "object",
+      "propertyNames": {
+       "type": "string"
+      },
+      "additionalProperties": {
+       "type": "object",
+       "properties": {
+        "text": {
+         "type": "string"
+        },
+        "base": {
+         "description": "Key of the built-in text it was edited from; copy as read, or omit.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "text"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "communication",
+     "scope",
+     "delivery",
+     "skills"
+    ],
+    "additionalProperties": false
+   },
+   "baseRevision": {
+    "description": "The revision the configuration edits; required unless preview is set.",
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 9007199254740991
+   },
+   "preview": {
+    "default": false,
+    "description": "true saves nothing: it composes both roles' prompts from the configuration and returns their prompt-preview resources.",
+    "type": "boolean"
+   }
+  },
+  "required": [
+   "config",
+   "preview"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_ack": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "trigger_id": {
+    "type": "string"
+   },
+   "text": {
+    "type": "string",
+    "minLength": 1,
+    "description": "At most 100 words; Markdown is supported."
+   }
+  },
+  "required": [
+   "trigger_id",
+   "text"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_thread_unrelated": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "thread": {
+    "type": "string",
+    "minLength": 1,
+    "description": "The thread key, which trigger/<id> of one of its messages shows as thread, such as feishu:<chat>:<root> or github:<number>."
+   },
+   "reason": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 300,
+    "description": "One sentence on why the thread is not about this ticket."
+   }
+  },
+  "required": [
+   "thread",
+   "reason"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_thread_follow": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "thread": {
+    "type": "string",
+    "description": "Thread key, such as github:<number>."
+   },
+   "reason": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 300,
+    "description": "How it relates, in one sentence."
+   }
+  },
+  "required": [
+   "thread",
+   "reason"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_trigger_handback": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "trigger_id": {
+    "type": "string",
+    "minLength": 1
+   },
+   "reason": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 300,
+    "description": "One sentence on what it asks for beyond this ticket."
+   }
+  },
+  "required": [
+   "trigger_id",
+   "reason"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_report": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "state": {
+    "type": "string",
+    "enum": [
+     "progress",
+     "ready",
+     "blocked",
+     "failed",
+     "dropped"
+    ]
+   },
+   "summary": {
+    "type": "string",
+    "minLength": 1
+   },
+   "human_action": {
+    "description": "One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it.",
+    "anyOf": [
+     {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+     },
+     {
+      "type": "null"
+     }
+    ]
+   },
+   "question_for_trigger_id": {
+    "description": "With human_action: the human message that raised the question, which is asked where that person wrote.",
+    "type": "string"
+   },
+   "pr_number": {
+    "description": "The ticket's PR: its source PR, or one by bot from a branch named after this ticket (DSH_SUPERAGENT_NAME).",
+    "anyOf": [
+     {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     },
+     {
+      "type": "null"
+     }
+    ]
+   },
+   "reply_to_trigger_id": {
+    "description": "The explicit human question this report answers; never for ordinary progress.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "state",
+   "summary"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_workflow_start": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "script": {
+    "type": "string",
+    "minLength": 1,
+    "description": "The workflow script: an absolute path, or one relative to cwd."
+   },
+   "cwd": {
+    "type": "string",
+    "pattern": "^\\/",
+    "description": "The absolute directory every node of the run works in."
+   },
+   "args": {
+    "description": "The value the script reads as args."
+   },
+   "pair": {
+    "description": "The compute pair every node runs on; without it, the Source's pair, else the Executor's default.",
+    "type": "string",
+    "minLength": 1
+   },
+   "trigger_id": {
+    "description": "The trigger of the request this run answers; starting with the same trigger, script, cwd and args again returns the run it started.",
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "required": [
+   "script",
+   "cwd"
+  ],
+  "additionalProperties": false
+ },
+ "orchestrator_workflow_status": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "run_id": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "additionalProperties": false
+ }
+}

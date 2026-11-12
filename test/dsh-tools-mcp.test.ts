@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createDshToolsMcpServer, dshToolDefinitions, injectMnemonContext } from '../src/dsh-tools-mcp.ts'
@@ -140,7 +141,7 @@ describe('DSH tools MCP bridge', () => {
     const [definition] = dshToolDefinitions(agent, signal)
     expect(await definition!.handler({}, {} as never)).toEqual({
       isError: true,
-      content: [{ type: 'text', text: 'chart below' }, { type: 'text', text: 'This DSH utility bridge supports text results only.' }],
+      content: [{ type: 'text', text: 'chart below' }, { type: 'text', text: expect.stringMatching(/text results only.*Work from the text/su) }],
     })
   })
 
@@ -212,5 +213,105 @@ describe('DSH tools MCP bridge', () => {
 
   it('returns the prompt unchanged when no Mnemon context was offered', () => {
     expect(injectMnemonContext('plan the deploy', [{ content: [{ type: 'text', text: 'nope' }], source: { kind: 'user' } }])).toBe('plan the deploy')
+  })
+})
+
+/** The `parameters` dsh-superagent's main Session registers for its 21 `orchestrator_*` tools (zod 4.4 `toJSONSchema`, 12 Nov 2026). */
+const ORCHESTRATOR_PARAMETERS = JSON.parse(
+  readFileSync(new URL('./fixtures/orchestrator-tool-parameters.json', import.meta.url), 'utf8'),
+) as Record<string, Record<string, unknown>>
+
+type Handler = (request: unknown, extra: unknown) => Promise<unknown>
+type Listed = { tools: { name: string; inputSchema: Record<string, unknown> }[] }
+type Called = { content: { type: string; text?: string }[]; isError?: boolean }
+
+/** A batch-executor Agent over the fixture's tools that records each call's arguments as DSH receives them. */
+function fixtureAgent(results: (name: string) => { content: unknown[]; isError?: boolean } = name => ({ content: [{ type: 'text', text: `ran ${name}` }] })) {
+  const received: { name: string; arguments: unknown }[] = []
+  const tools = {
+    schemas: () => Object.entries(ORCHESTRATOR_PARAMETERS).map(([name, parameters]) => tool(name, `DSH ${name}`, parameters)),
+    execute: async (input: { calls: { id: string; name: string; arguments: string }[] }) => ({
+      results: input.calls.map(call => {
+        received.push({ name: call.name, arguments: JSON.parse(call.arguments) })
+        return { callId: call.id, result: results(call.name) }
+      }),
+      additionalContexts: [],
+      concluded: false,
+    }),
+  }
+  return { agent: { ctx: { tools } } as unknown as Agent, received }
+}
+
+/** The in-process MCP server's own request handlers, as Claude Code reaches them. */
+function handlersOf(server: ReturnType<typeof createDshToolsMcpServer>) {
+  const handlers = (server.instance as unknown as { server: { _requestHandlers: Map<string, Handler> } }).server._requestHandlers
+  return {
+    list: async () => await handlers.get('tools/list')!({ method: 'tools/list', params: {} }, {}) as Listed,
+    call: async (name: string, args: Record<string, unknown>) => {
+      try {
+        return await handlers.get('tools/call')!(
+          { method: 'tools/call', params: { name, arguments: args } },
+          { signal: new AbortController().signal, requestId: 1, sendNotification: async () => {}, sendRequest: async () => ({}) },
+        ) as Called
+      } catch (error) {
+        return { isError: true, content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }] } satisfies Called
+      }
+    },
+  }
+}
+
+describe('DSH tools MCP bridge: listing and validation', () => {
+  it('lists every orchestrator tool with its DSH parameters verbatim', async () => {
+    const { signal } = lifetime()
+    const { agent } = fixtureAgent()
+    const { tools } = await handlersOf(createDshToolsMcpServer(agent, signal)).list()
+    expect(tools.map(({ name }) => name)).toEqual(Object.keys(ORCHESTRATOR_PARAMETERS))
+    for (const { name, inputSchema } of tools) expect(inputSchema, name).toEqual(ORCHESTRATOR_PARAMETERS[name])
+    const start = tools.find(({ name }) => name === 'orchestrator_workflow_start')!.inputSchema as {
+      additionalProperties?: unknown
+      properties: Record<string, { description?: string; minLength?: number; pattern?: string }>
+    }
+    expect(start.additionalProperties).toBe(false)
+    expect(start.properties.trigger_id?.description).toMatch(/returns the run it started/)
+    expect(start.properties.cwd?.pattern).toBe('^\\/')
+  })
+
+  it('refuses an unknown top-level key instead of stripping it before DSH sees the call', async () => {
+    const { signal } = lifetime()
+    const { agent, received } = fixtureAgent()
+    const { call } = handlersOf(createDshToolsMcpServer(agent, signal))
+    const refused = await call('orchestrator_workflow_start', { script: 'run.js', cwd: '/srv/work', triggerId: 'trg-1' })
+    expect(refused.isError).toBe(true)
+    expect(JSON.stringify(refused.content)).toContain('triggerId')
+    const status = await call('orchestrator_workflow_status', { runId: 'wf-1' })
+    expect(status.isError).toBe(true)
+    expect(received).toEqual([])
+
+    const started = await call('orchestrator_workflow_start', { script: 'run.js', cwd: '/srv/work', trigger_id: 'trg-1' })
+    expect(started).toEqual({ content: [{ type: 'text', text: 'ran orchestrator_workflow_start' }] })
+    expect(received).toEqual([{ name: 'orchestrator_workflow_start', arguments: { script: 'run.js', cwd: '/srv/work', trigger_id: 'trg-1' } }])
+  })
+
+  it('runs the turn without DSH tools, and logs it, when the registry cannot project its list', () => {
+    const { signal } = lifetime()
+    const warnings: string[] = []
+    const tools = {
+      schemas: () => { throw new Error('tool "plugin_x" parameters must be lossless JSON before schema projection') },
+      execute: async () => ({ content: [], isError: false }),
+    }
+    const agent = { ctx: { tools } } as unknown as Agent
+    expect(dshToolDefinitions(agent, signal, message => { warnings.push(message) })).toEqual([])
+    expect(createDshToolsMcpServer(agent, signal)).toMatchObject({ type: 'sdk', name: 'dsh' })
+    expect(warnings).toEqual([expect.stringContaining('plugin_x')])
+  })
+
+  it('refuses a non-text result and says what the model can do instead', async () => {
+    const { signal } = lifetime()
+    const { agent } = fixtureAgent(() => ({ content: [{ type: 'text', text: 'caption' }, { type: 'image', attachmentId: 'img-1' }] }))
+    const { call } = handlersOf(createDshToolsMcpServer(agent, signal))
+    const reply = await call('orchestrator_eval_read', { trigger_id: 'trg-1', resource: 'image', image_id: 'img-1' })
+    expect(reply.isError).toBe(true)
+    expect(reply.content[0]).toEqual({ type: 'text', text: 'caption' })
+    expect(reply.content[1]?.text).toMatch(/text results only.*Work from the text/s)
   })
 })
