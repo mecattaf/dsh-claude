@@ -59,6 +59,15 @@ describe('headless-preset', () => {
     expect(registry.select).toHaveBeenCalledWith(expect.anything(), 'claude')
   })
 
+  it('ignores a resumed agent', async () => {
+    // `dsh headless --session-id` resumes through agents.resume, which
+    // announces the Agent with source 'resume'.
+    const { registry, created } = await host({ preset: 'claude' })
+    await created(agent(), 'resume')
+    expect(registry.composedPreset).not.toHaveBeenCalled()
+    expect(registry.select).not.toHaveBeenCalled()
+  })
+
   it('leaves an agent with a composed preset untouched', async () => {
     const { registry, created } = await host({ preset: 'claude' }, 'dsh-superagent-router')
     await created(agent())
@@ -69,15 +78,6 @@ describe('headless-preset', () => {
   it('ignores child agents', async () => {
     const { registry, created } = await host({ preset: 'claude' })
     await created(agent(1))
-    expect(registry.composedPreset).not.toHaveBeenCalled()
-    expect(registry.select).not.toHaveBeenCalled()
-  })
-
-  it('ignores a resumed agent', async () => {
-    // `dsh headless --session-id` resumes through agents.resume, which
-    // announces the Agent with source 'resume'.
-    const { registry, created } = await host({ preset: 'claude' })
-    await created(agent(), 'resume')
     expect(registry.composedPreset).not.toHaveBeenCalled()
     expect(registry.select).not.toHaveBeenCalled()
   })
