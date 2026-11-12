@@ -144,6 +144,54 @@ describe('DSH tools MCP bridge', () => {
     })
   })
 
+  /** DSH 0.2's `ToolBatchExecutionError` (dsh-tools `types/executor.js`): a fixed message, what broke in `cause`. */
+  class ToolBatchExecutionError extends Error {
+    constructor(cause: unknown) {
+      super('Tool batch execution failed', { cause })
+      this.name = 'ToolBatchExecutionError'
+    }
+  }
+
+  function failingWith(error: unknown): Agent {
+    const tools = {
+      schemas: () => [tool('orchestrator_eval')],
+      execute: async () => { throw error },
+    }
+    return { ctx: { tools } } as unknown as Agent
+  }
+
+  it('names the cause when a DSH 0.2 batch executor fails internally', async () => {
+    const { signal } = lifetime()
+    const failure = new ToolBatchExecutionError(new TypeError("Cannot read properties of undefined (reading 'map')"))
+    const [definition] = dshToolDefinitions(failingWith(failure), signal)
+    const error = await definition!.handler({}, {} as never).then(() => undefined, (error: unknown) => error as Error)
+    expect(error?.message).toBe("Tool batch execution failed: TypeError: Cannot read properties of undefined (reading 'map')")
+    expect(error?.message).not.toMatch(/\n\s+at /)
+    expect(error?.cause).toBe(failure)
+  })
+
+  it('names a nested cause chain, bounded, without stacks', async () => {
+    const { signal } = lifetime()
+    const root = new Error('connect ECONNREFUSED')
+    const failure = new ToolBatchExecutionError(new Error('store unavailable', { cause: root }))
+    const [definition] = dshToolDefinitions(failingWith(failure), signal)
+    await expect(definition!.handler({}, {} as never))
+      .rejects.toThrow(/^Tool batch execution failed: store unavailable: connect ECONNREFUSED$/)
+
+    const long = new ToolBatchExecutionError(new Error('x'.repeat(5000)))
+    const [bounded] = dshToolDefinitions(failingWith(long), signal)
+    const error = await bounded!.handler({}, {} as never).then(() => undefined, (error: unknown) => error as Error)
+    expect(error?.message.startsWith('Tool batch execution failed: xxx')).toBe(true)
+    expect(error!.message.length).toBeLessThanOrEqual(500)
+  })
+
+  it('passes an error without a cause through unchanged', async () => {
+    const { signal } = lifetime()
+    const failure = new Error('aborted')
+    const [definition] = dshToolDefinitions(failingWith(failure), signal)
+    await expect(definition!.handler({}, {} as never)).rejects.toBe(failure)
+  })
+
   it('still runs a call through a single-call (DSH 0.1.7) executor', async () => {
     const { signal } = lifetime()
     const [definition] = dshToolDefinitions(agentWith('mnemon_recall'), signal)

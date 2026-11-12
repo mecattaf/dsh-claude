@@ -60,6 +60,35 @@ export function injectMnemonContext(prompt: ClaudePrompt, messages: readonly Mne
 /** One bridged call's result, as the registry renders it. */
 type BridgedResult = { content: readonly ContentBlock[]; isError?: boolean }
 
+/** How many `cause` levels, and how many characters in all, a bridged failure names. */
+const CAUSE_DEPTH = 4
+const CAUSE_TEXT_LIMIT = 500
+
+function describeCause(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause)
+  return cause.name === 'Error' ? cause.message : `${cause.name}: ${cause.message}`
+}
+
+/**
+ * DSH 0.2's batch executor wraps an internal failure as `ToolBatchExecutionError`,
+ * whose message is only "Tool batch execution failed"; what broke is in its
+ * `cause`. Name the cause chain (messages only, a few levels, bounded length)
+ * so the Claude session, and its transcript, show the real error. Stacks stay
+ * out of the model's view; the original error is kept as `cause`.
+ */
+function withCause(error: unknown): unknown {
+  if (!(error instanceof Error) || error.cause === undefined) return error
+  const seen = new Set<unknown>([error])
+  const parts = [error.message]
+  for (let cause: unknown = error.cause; cause !== undefined && !seen.has(cause) && parts.length <= CAUSE_DEPTH;) {
+    seen.add(cause)
+    parts.push(describeCause(cause))
+    cause = cause instanceof Error ? cause.cause : undefined
+  }
+  const text = parts.join(': ')
+  return new Error(text.length > CAUSE_TEXT_LIMIT ? `${text.slice(0, CAUSE_TEXT_LIMIT - 1)}…` : text, { cause: error })
+}
+
 /**
  * Run one bridged call through the Agent's tool executor.
  *
@@ -79,7 +108,12 @@ async function executeOne(
     ...call,
     calls: [{ type: 'tool-call' as const, id: call.callId, name: call.name, arguments: JSON.stringify(call.arguments) }],
   }
-  const settled = await (tools.execute as unknown as (input: unknown) => Promise<unknown>)(input)
+  let settled: unknown
+  try {
+    settled = await (tools.execute as unknown as (input: unknown) => Promise<unknown>)(input)
+  } catch (error) {
+    throw withCause(error)
+  }
   const results = (settled as { results?: readonly { callId: ToolCallId; result: BridgedResult }[] }).results
   if (!Array.isArray(results)) return settled as BridgedResult
   const own = results.find(entry => entry.callId === call.callId) ?? results[0]
