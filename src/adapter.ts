@@ -258,6 +258,11 @@ function resolveAgent(agents: Pick<AgentRegistry, 'currentInitiator' | 'get'>, o
 }
 
 export class ClaudeCodeAdapter extends LlmAdapter {
+  // DSH omits empty assistant messages from model history. Remember a completed
+  // input by its durable message id for this Agent too, so a notice-only step
+  // cannot replay it even when the completed Claude turn returned no prose.
+  // This cache lasts only for this adapter/Agent lifetime, not process restarts.
+  readonly #completedInput = new WeakMap<Agent, string>()
   readonly #supervisor: ClaudeSupervisor
   readonly #agents: Pick<AgentRegistry, 'currentInitiator' | 'get'>
   readonly #attachments: AttachmentReader
@@ -384,6 +389,16 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     if (preset === undefined || !this.#presets.includes(preset)) {
       throw new Error(presetRefusal(CLAUDE_CODE_PROVIDER, this.#presets))
     }
+    // Only a successful completion proves this exact input was answered. An
+    // assistant prefix in history can also come from an aborted or failed turn.
+    const turnMessage = [...options.messages].reverse().find(message => isTurnMessage(message, this.#sources))
+    const inputIndex = turnMessage === undefined ? -1 : options.messages.indexOf(turnMessage)
+    const hasLaterNotice = inputIndex >= 0 && options.messages.slice(inputIndex + 1)
+      .some(message => message.role === 'user' && message.source !== undefined && 'form' in message.source && message.source.form === 'notice')
+    if (hasLaterNotice && turnMessage?.id !== undefined && this.#completedInput.get(agent) === turnMessage.id) {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
     const thinkingMode = thinkingModeFor(options.reasoningEffort)
     let prompt: ClaudePrompt
     try {
@@ -472,6 +487,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
         yield* flushText()
         if (event.type === 'segment-complete') continue
         completed = true
+        if (turnMessage?.id !== undefined) this.#completedInput.set(agent, turnMessage.id)
         if (pendingUsage !== undefined) yield { type: 'usage', usage: pendingUsage }
         yield { type: 'finish', reason: { kind: 'stop' } }
       }
