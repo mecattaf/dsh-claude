@@ -428,6 +428,9 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     const renderMode = await this.#renderMode()
     const native = renderMode === 'native'
     const systemAppend = this.#systemPromptPresets.includes(preset) ? options.system?.trim() : undefined
+    // This admitted attempt supersedes any earlier success for the input. Only
+    // its own completion may suppress a later notice-only step after a retry.
+    this.#completedInput.delete(agent)
     const events = await this.#supervisor.runTurn({
       agent,
       prompt: injectReviewComments(

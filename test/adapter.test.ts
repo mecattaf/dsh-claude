@@ -795,6 +795,36 @@ describe('dsh-superagent message forwarding', () => {
     expect(runTurn).toHaveBeenCalledTimes(2)
   })
 
+  it.each(['AbortError', 'Error'])('does not reuse an earlier success after a same-input retry ends with %s', async name => {
+    const brief = user('the brief')
+    const notice = sourced('background job finished', { kind: 'tool-jobs', form: 'notice', summary: 'bash finished' })
+    const failure = new Error('explicit retry interrupted after partial text')
+    failure.name = name
+    const runTurn = vi.fn()
+      .mockImplementationOnce(async function* () { yield { type: 'complete', text: '' } })
+      .mockImplementationOnce(async function* () {
+        yield { type: 'answer', text: 'partial retry' }
+        yield { type: 'segment-complete', text: 'partial retry' }
+        throw failure
+      })
+      .mockImplementation(async function* () { yield { type: 'complete', text: '' } })
+    const supervisor = { contextWindow: () => undefined, runTurn } as unknown as ClaudeSupervisor
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(),
+      () => 'dsh-superagent-worker')
+    for await (const _ of adapter.stream(options([brief]))) { /* initial success */ }
+    const retry = async () => { for await (const _ of adapter.stream(options([brief]))) { /* explicit retry */ } }
+    if (name === 'Error') await expect(retry()).rejects.toThrow(failure)
+    else await retry()
+    expect(runTurn).toHaveBeenCalledTimes(2)
+
+    // A later notice cannot turn that failed retry into an answered input.
+    for await (const _ of adapter.stream(options([brief, reply('partial retry'), notice]))) { /* retry remains runnable */ }
+    expect(runTurn).toHaveBeenCalledTimes(3)
+    // The new successful completion then suppresses another notice-only step.
+    for await (const _ of adapter.stream(options([brief, notice]))) { /* answered */ }
+    expect(runTurn).toHaveBeenCalledTimes(3)
+  })
+
   it('delivers notices injected while the previous turn ran, once', async () => {
     const midTurn = superagent('{"settings_saved":"eval"}', 'notice')
     const first = await promptFor([user('route the backlog'), midTurn, reply('routed'), superagent(workerReport)])
