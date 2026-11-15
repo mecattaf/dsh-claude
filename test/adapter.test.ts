@@ -728,6 +728,103 @@ describe('dsh-superagent message forwarding', () => {
       .rejects.toThrow(/no direct human input or relay/)
   })
 
+  it('starts no Claude turn for a step that brings only notices after an answered message', async () => {
+    // Hazard (floor r1, 12 Nov): a background job's end lands in the next-step inbox while the turn runs, DSH takes a
+    // second step, and the brief that step 1 answered went to the same Claude session again.
+    const jobDone = sourced('background job b1 finished [status: completed]', { kind: 'tool-jobs', form: 'notice', summary: 'bash b1' })
+    for (const messages of [
+      [user('the brief'), reply('{"ok":true}'), jobDone],
+      [superagent(workerReport), reply('noted'), superagent(ticketEnded, 'notice')],
+    ]) {
+      const { supervisor, calls } = capturingSupervisor()
+      const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(),
+        () => 'dsh-superagent-worker')
+      for await (const _ of adapter.stream(options([messages[0]!]))) { /* successful prior step */ }
+      const chunks = []
+      for await (const chunk of adapter.stream(options(messages))) chunks.push(chunk)
+      expect(calls).toHaveLength(1)
+      expect(chunks).toEqual([{ type: 'finish', reason: { kind: 'stop' } }])
+    }
+    // The notice skipped there still reaches the next turn, ahead of its message.
+    const next = await promptFor([superagent(workerReport), reply('noted'), superagent(ticketEnded, 'notice'), superagent('next relay')]) as string
+    expect(next).toContain(ticketEnded)
+    expect(next.endsWith('\n\nnext relay')).toBe(true)
+  })
+
+  it('does not replay a completed input when its empty answer was dropped from history', async () => {
+    const brief = user('run one bounded operation')
+    const jobDone = sourced('background job finished', { kind: 'tool-jobs', form: 'notice', summary: 'bash finished' })
+    const { supervisor, calls } = capturingSupervisor([{ type: 'complete', text: '' }])
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(),
+      () => 'dsh-superagent-worker')
+    for await (const _ of adapter.stream(options([brief]))) { /* drain */ }
+    const chunks = []
+    for await (const chunk of adapter.stream(options([brief, jobDone]))) chunks.push(chunk)
+    expect(calls).toHaveLength(1)
+    expect(chunks).toEqual([{ type: 'finish', reason: { kind: 'stop' } }])
+    // Same text with a new durable input id is a real new request.
+    for await (const _ of adapter.stream(options([brief, jobDone, user('run one bounded operation')]))) { /* drain */ }
+    expect(calls).toHaveLength(2)
+  })
+
+  it('does not suppress an explicit retry without a later notice', async () => {
+    const brief = user('the brief')
+    const { supervisor, calls } = capturingSupervisor()
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(), claudePreset)
+    for await (const _ of adapter.stream(options([brief]))) { /* completed */ }
+    for await (const _ of adapter.stream(options([brief]))) { /* explicit retry */ }
+    expect(calls).toHaveLength(2)
+  })
+
+  it.each(['AbortError', 'Error'])('allows retry after %s with partial assistant text in history', async name => {
+    const brief = user('the brief')
+    const failure = new Error('interrupted after partial text')
+    failure.name = name
+    const runTurn = vi.fn().mockImplementationOnce(async function* () {
+      yield { type: 'answer', text: 'partial' }
+      yield { type: 'segment-complete', text: 'partial' }
+      throw failure
+    }).mockImplementation(async function* () { yield { type: 'complete', text: '' } })
+    const supervisor = { contextWindow: () => undefined, runTurn } as unknown as ClaudeSupervisor
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(),
+      () => 'dsh-superagent-worker')
+    const first = async () => { for await (const _ of adapter.stream(options([brief]))) { /* drain */ } }
+    if (name === 'Error') await expect(first()).rejects.toThrow(failure)
+    else await first()
+    for await (const _ of adapter.stream(options([brief, reply('partial')]))) { /* explicit retry */ }
+    expect(runTurn).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['AbortError', 'Error'])('does not reuse an earlier success after a same-input retry ends with %s', async name => {
+    const brief = user('the brief')
+    const notice = sourced('background job finished', { kind: 'tool-jobs', form: 'notice', summary: 'bash finished' })
+    const failure = new Error('explicit retry interrupted after partial text')
+    failure.name = name
+    const runTurn = vi.fn()
+      .mockImplementationOnce(async function* () { yield { type: 'complete', text: '' } })
+      .mockImplementationOnce(async function* () {
+        yield { type: 'answer', text: 'partial retry' }
+        yield { type: 'segment-complete', text: 'partial retry' }
+        throw failure
+      })
+      .mockImplementation(async function* () { yield { type: 'complete', text: '' } })
+    const supervisor = { contextWindow: () => undefined, runTurn } as unknown as ClaudeSupervisor
+    const adapter = new ClaudeCodeAdapter(supervisor, { currentInitiator: () => agent, get: () => agent }, attachmentStore(),
+      () => 'dsh-superagent-worker')
+    for await (const _ of adapter.stream(options([brief]))) { /* initial success */ }
+    const retry = async () => { for await (const _ of adapter.stream(options([brief]))) { /* explicit retry */ } }
+    if (name === 'Error') await expect(retry()).rejects.toThrow(failure)
+    else await retry()
+    expect(runTurn).toHaveBeenCalledTimes(2)
+
+    // A later notice cannot turn that failed retry into an answered input.
+    for await (const _ of adapter.stream(options([brief, reply('partial retry'), notice]))) { /* retry remains runnable */ }
+    expect(runTurn).toHaveBeenCalledTimes(3)
+    // The new successful completion then suppresses another notice-only step.
+    for await (const _ of adapter.stream(options([brief, notice]))) { /* answered */ }
+    expect(runTurn).toHaveBeenCalledTimes(3)
+  })
+
   it('delivers notices injected while the previous turn ran, once', async () => {
     const midTurn = superagent('{"settings_saved":"eval"}', 'notice')
     const first = await promptFor([user('route the backlog'), midTurn, reply('routed'), superagent(workerReport)])
